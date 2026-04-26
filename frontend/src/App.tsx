@@ -1,5 +1,5 @@
 import type { FormEvent } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 type GameStatus = 'OPEN' | 'CONFIRMED' | 'WAITING' | 'LOCKED' | 'CANCELLED'
 type PlayerRole = 'PLAYING' | 'WAITING'
@@ -48,6 +48,7 @@ type ApiConfig = {
   vapidPublicKey: string
   closedGroupEnabled: boolean
   registrationLeadHours: number
+  googleClientId: string
 }
 
 type GameFormState = {
@@ -57,7 +58,33 @@ type GameFormState = {
   gameDate: string
 }
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8787').replace(/\/$/, '')
+type GoogleCredentialResponse = {
+  credential: string
+}
+
+declare global {
+  interface Window {
+    google?: {
+      accounts?: {
+        id?: {
+          initialize: (params: {
+            client_id: string
+            callback: (response: GoogleCredentialResponse) => void
+            auto_select?: boolean
+            ux_mode?: 'popup' | 'redirect'
+          }) => void
+          renderButton: (
+            parent: HTMLElement,
+            options: { theme?: 'outline' | 'filled_blue'; size?: 'large' | 'medium'; text?: string }
+          ) => void
+        }
+      }
+    }
+  }
+}
+
+const configuredApiBase = String(import.meta.env.VITE_API_BASE_URL || '').trim()
+const API_BASE = configuredApiBase ? configuredApiBase.replace(/\/$/, '') : ''
 const USER_ID_KEY = 'yomshishi_user_id'
 
 function getStatusLabel(status: GameStatus): string {
@@ -147,10 +174,10 @@ function App() {
   const [isBusy, setIsBusy] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
-  const [nameInput, setNameInput] = useState('')
-  const [emailInput, setEmailInput] = useState('')
+  const [googleReady, setGoogleReady] = useState(false)
   const [gameForm, setGameForm] = useState<GameFormState>(() => createEmptyGameForm())
   const [isEditingGame, setIsEditingGame] = useState(false)
+  const googleButtonRef = useRef<HTMLDivElement | null>(null)
 
   const registeredUserId = useMemo(() => {
     const raw = localStorage.getItem(USER_ID_KEY)
@@ -202,32 +229,72 @@ function App() {
     }
   }, [game, isEditingGame])
 
+  useEffect(() => {
+    if (user || !apiConfig?.googleClientId || !googleButtonRef.current) {
+      return
+    }
+
+    const googleIdApi = window.google?.accounts?.id
+    if (!googleIdApi) {
+      setGoogleReady(false)
+      return
+    }
+
+    const handleGoogleCredential = async (response: GoogleCredentialResponse) => {
+      if (!response.credential) {
+        setError('התקבל טוקן Google לא תקין.')
+        return
+      }
+
+      setError('')
+      setSuccess('')
+      setIsBusy(true)
+      try {
+        const authResponse = await apiRequest<{ user: User }>('/api/auth/google', {
+          method: 'POST',
+          body: JSON.stringify({ idToken: response.credential }),
+        })
+        setUser(authResponse.user)
+        localStorage.setItem(USER_ID_KEY, String(authResponse.user.id))
+        await refreshGame(authResponse.user.id)
+        setSuccess('נכנסת בהצלחה עם Google.')
+      } catch (requestError: unknown) {
+        const errorMessage = requestError instanceof Error ? requestError.message : 'כניסה עם Google נכשלה.'
+        setError(errorMessage)
+      } finally {
+        setIsBusy(false)
+      }
+    }
+
+    googleIdApi.initialize({
+      client_id: apiConfig.googleClientId,
+      callback: handleGoogleCredential,
+      ux_mode: 'popup',
+      auto_select: false,
+    })
+
+    googleButtonRef.current.innerHTML = ''
+    googleIdApi.renderButton(googleButtonRef.current, {
+      theme: 'outline',
+      size: 'large',
+      text: 'continue_with',
+    })
+
+    setGoogleReady(true)
+  }, [apiConfig?.googleClientId, user])
+
   async function refreshGame(userId?: number) {
     const query = userId ? `?userId=${userId}` : ''
     const response = await apiRequest<{ game: Game | null }>(`/api/games/current${query}`)
     setGame(response.game)
   }
 
-  async function registerUser(event: FormEvent) {
-    event.preventDefault()
+  function logout() {
+    localStorage.removeItem(USER_ID_KEY)
+    setUser(null)
+    setGame(null)
+    setSuccess('התנתקת בהצלחה.')
     setError('')
-    setSuccess('')
-    setIsBusy(true)
-    try {
-      const response = await apiRequest<{ user: User }>('/api/auth/register', {
-        method: 'POST',
-        body: JSON.stringify({ name: nameInput, email: emailInput }),
-      })
-      setUser(response.user)
-      localStorage.setItem(USER_ID_KEY, String(response.user.id))
-      await refreshGame(response.user.id)
-      setSuccess('ההרשמה הצליחה. כעת ניתן ליצור משחק או להירשם למשחק קיים.')
-    } catch (requestError: unknown) {
-      const errorMessage = requestError instanceof Error ? requestError.message : 'ההרשמה נכשלה.'
-      setError(errorMessage)
-    } finally {
-      setIsBusy(false)
-    }
   }
 
   async function joinGame() {
@@ -400,26 +467,14 @@ function App() {
       <section className="grid">
         {!user && (
           <article className="card">
-            <h2>רישום חד-פעמי</h2>
-            <p className="muted">המערכת פתוחה למשתמשים שאושרו מראש בלבד.</p>
-            <form className="input-grid" onSubmit={registerUser}>
-              <input
-                required
-                placeholder="שם מלא"
-                value={nameInput}
-                onChange={(event) => setNameInput(event.target.value)}
-              />
-              <input
-                required
-                placeholder="אימייל"
-                type="email"
-                value={emailInput}
-                onChange={(event) => setEmailInput(event.target.value)}
-              />
-              <button disabled={isBusy} className="cta cta-primary" type="submit">
-                {isBusy ? 'שולח...' : 'הרשמה'}
-              </button>
-            </form>
+            <h2>כניסה עם Google</h2>
+            <p className="muted">המערכת פתוחה למשתמשים שאושרו מראש בלבד לפי האימייל בחשבון Google.</p>
+            <div className="input-grid">
+              <div ref={googleButtonRef} style={{ minHeight: 44 }} />
+              {!googleReady && (
+                <p className="muted">טוען כפתור Google... אם הוא לא מופיע, רענן את הדף.</p>
+              )}
+            </div>
           </article>
         )}
 
@@ -455,6 +510,10 @@ function App() {
                 onClick={subscribeForPush}
               >
                 הפעלת תזכורות Push
+              </button>
+
+              <button disabled={isBusy} className="cta cta-soft" onClick={logout}>
+                התנתקות
               </button>
             </div>
           </article>

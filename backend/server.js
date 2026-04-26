@@ -2,6 +2,7 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const express = require('express');
 const fs = require('fs');
+const { OAuth2Client } = require('google-auth-library');
 const path = require('path');
 const initSqlJs = require('sql.js');
 const webPush = require('web-push');
@@ -26,11 +27,13 @@ const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
   .filter(Boolean);
 const REGISTRATION_LEAD_HOURS = Number(process.env.REGISTRATION_LEAD_HOURS || 24);
 const REGISTRATION_LEAD_MS = REGISTRATION_LEAD_HOURS * 60 * 60 * 1000;
+const GOOGLE_CLIENT_ID = String(process.env.GOOGLE_CLIENT_ID || '').trim();
 
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
 const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:admin@example.com';
 const REMINDER_SECRET = process.env.REMINDER_SECRET || '';
+const googleOAuthClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
 
 if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
   webPush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
@@ -138,6 +141,32 @@ function ensureColumn(tableName, columnName, definition) {
 
 function getUserRow(userId) {
   return get('SELECT id, name, email FROM users WHERE id = ?', [userId]);
+}
+
+function upsertUser(name, email) {
+  const existingUser = get('SELECT id, name, email FROM users WHERE email = ?', [email]);
+  if (existingUser) {
+    if (existingUser.name !== name) {
+      run('UPDATE users SET name = ?, updated_at = ? WHERE id = ?', [
+        name,
+        nowIso(),
+        existingUser.id,
+      ]);
+      persistDb();
+    }
+
+    return getUserRow(Number(existingUser.id));
+  }
+
+  run('INSERT INTO users (name, email, created_at, updated_at) VALUES (?, ?, ?, ?)', [
+    name,
+    email,
+    nowIso(),
+    nowIso(),
+  ]);
+  const row = get('SELECT last_insert_rowid() AS id');
+  persistDb();
+  return getUserRow(Number(row.id));
 }
 
 function serializeUser(user) {
@@ -560,7 +589,43 @@ async function startServer() {
       vapidPublicKey: VAPID_PUBLIC_KEY,
       closedGroupEnabled: true,
       registrationLeadHours: REGISTRATION_LEAD_HOURS,
+      googleClientId: GOOGLE_CLIENT_ID,
     });
+  });
+
+  app.post('/api/auth/google', async (req, res) => {
+    const idToken = String(req.body?.idToken || '');
+    if (!idToken) {
+      return res.status(400).json({ message: 'חסר Google ID token.' });
+    }
+    if (!GOOGLE_CLIENT_ID || !googleOAuthClient) {
+      return res.status(500).json({ message: 'Google Sign-In אינו מוגדר בשרת.' });
+    }
+
+    try {
+      const ticket = await googleOAuthClient.verifyIdToken({
+        idToken,
+        audience: GOOGLE_CLIENT_ID,
+      });
+      const payload = ticket.getPayload();
+      const email = normalizeEmail(payload?.email || '');
+      const name = String(payload?.name || '').trim();
+      const isEmailVerified = Boolean(payload?.email_verified);
+
+      if (!email || !name || !isEmailVerified) {
+        return res.status(403).json({ message: 'חשבון Google לא מאומת או חסרים פרטים.' });
+      }
+
+      const approved = ensureApproved(email);
+      if (!approved.ok) {
+        return res.status(403).json({ message: approved.message });
+      }
+
+      const user = upsertUser(name, email);
+      return res.json({ user: serializeUser(user) });
+    } catch (_error) {
+      return res.status(401).json({ message: 'אימות Google נכשל.' });
+    }
   });
 
   app.post('/api/auth/register', (req, res) => {
@@ -576,31 +641,7 @@ async function startServer() {
       return res.status(403).json({ message: approved.message });
     }
 
-    const existingUser = get('SELECT id, name, email FROM users WHERE email = ?', [email]);
-    if (existingUser) {
-      if (existingUser.name !== name) {
-        run('UPDATE users SET name = ?, updated_at = ? WHERE id = ?', [
-          name,
-          nowIso(),
-          existingUser.id,
-        ]);
-        persistDb();
-      }
-
-      const refreshed = getUserRow(Number(existingUser.id));
-      return res.json({ user: serializeUser(refreshed) });
-    }
-
-    run('INSERT INTO users (name, email, created_at, updated_at) VALUES (?, ?, ?, ?)', [
-      name,
-      email,
-      nowIso(),
-      nowIso(),
-    ]);
-    const row = get('SELECT last_insert_rowid() AS id');
-    persistDb();
-
-    const user = getUserRow(Number(row.id));
+    const user = upsertUser(name, email);
     return res.status(201).json({ user: serializeUser(user) });
   });
 

@@ -6,7 +6,8 @@ Closed-group app for managing Friday 3v3 basketball games with manual game creat
 
 - Frontend: React + Vite + TypeScript, mobile-first RTL Hebrew UI, installable PWA.
 - Backend: Node.js + Express, SQLite-compatible storage via `sql.js` persisted to disk (`backend/data/yomshishi.sqlite`).
-- Registration: one-time by name + email, user id stored in localStorage and used for future actions.
+- Authentication: Google Sign-In only (no password / no email verification flow in app).
+- Session persistence: user id stored in localStorage for future actions.
 - Group policy: only pre-approved emails can register (`APPROVED_EMAILS`).
 - Admin policy: any approved participant can create the next game, but only emails in `ADMIN_EMAILS` can edit or delete an existing game.
 
@@ -26,11 +27,12 @@ Closed-group app for managing Friday 3v3 basketball games with manual game creat
 
 1. Backend:
    - Copy `backend/.env.example` to `backend/.env` and set values.
+   - Set `GOOGLE_CLIENT_ID` to the exact OAuth Web Client ID used by the frontend domain.
    - Run `npm install` in backend.
    - Run `npm run dev` in backend.
 2. Frontend:
    - Copy `frontend/.env.example` to `frontend/.env`.
-   - Set `VITE_API_BASE_URL`.
+   - Keep `VITE_API_BASE_URL` empty when frontend is served from the same backend host.
    - Run `npm install` in frontend.
    - Run `npm run dev` in frontend.
 
