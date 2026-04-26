@@ -899,14 +899,21 @@ async function startServer() {
 
   app.post('/api/games', (req, res) => {
     const userId = Number(req.body?.userId);
-    const requester = getRequester(userId);
-    if (requester.error) {
-      return res.status(requester.error.status).json({ message: requester.error.message });
-    }
+    const adminToken = String(req.body?.adminToken || '');
+    let requesterUser = null;
 
-    const profileCheck = ensureProfileCompleted(requester.user);
-    if (!profileCheck.ok) {
-      return res.status(409).json({ message: profileCheck.message });
+    if (!isValidAdminToken(adminToken)) {
+      const requester = getRequester(userId);
+      if (requester.error) {
+        return res.status(requester.error.status).json({ message: requester.error.message });
+      }
+
+      const profileCheck = ensureProfileCompleted(requester.user);
+      if (!profileCheck.ok) {
+        return res.status(409).json({ message: profileCheck.message });
+      }
+
+      requesterUser = requester.user;
     }
 
     if (getUpcomingGamesCount() >= MAX_ACTIVE_GAMES) {
@@ -940,7 +947,7 @@ async function startServer() {
         validated.value.location,
         validated.value.notes,
         validated.value.gameDate,
-        requester.user.id,
+        requesterUser ? requesterUser.id : null,
         registrationDeadlineIso(validated.value.gameDate),
         createdAt,
         createdAt,
@@ -951,7 +958,7 @@ async function startServer() {
     const gameId = Number(row.id);
     recalculateGame(gameId);
     return res.status(201).json({
-      game: serializeGame(gameId, requester.user.id),
+      game: serializeGame(gameId, requesterUser ? requesterUser.id : null),
       message: 'המשחק נוצר. שים לב: גם מי שיצר את המשחק חייב להירשם אליו בנפרד.',
     });
   });

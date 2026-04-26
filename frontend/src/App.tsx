@@ -566,7 +566,8 @@ function App() {
       return
     }
 
-    if (!user || needsProfileCompletion) return
+    if (!user && !hasAdminSession) return
+    if (user && needsProfileCompletion && !hasAdminSession) return
 
     setError('')
     setSuccess('')
@@ -574,7 +575,7 @@ function App() {
 
     try {
       const payload = {
-        userId: user.id,
+        userId: user?.id || 0,
         adminToken,
         title: gameForm.title,
         location: gameForm.location,
@@ -587,7 +588,7 @@ function App() {
         body: JSON.stringify(payload),
       })
       setGame(response.game)
-      await refreshUpcomingGames(user.id)
+      await refreshUpcomingGames(user?.id)
       setSuccess(
         response.message || 'המשחק נוצר. שים לב: גם מי שיצר את המשחק חייב להירשם אליו בנפרד.'
       )
@@ -704,7 +705,7 @@ function App() {
   }
 
   const isUserInGame = Boolean(user && game?.players.some((item) => item.userId === user.id))
-  const canShowCreateForm = Boolean(user && upcomingGames.length < maxActiveGames)
+  const canShowCreateForm = Boolean((user || hasAdminSession) && upcomingGames.length < maxActiveGames)
   const canShowAdminEditor = Boolean((user?.isAdmin || hasAdminSession) && upcomingGames.length)
   const isGoogleConfigured = Boolean(apiConfig?.googleClientId)
   const isSecureOriginForGoogle =
@@ -718,7 +719,7 @@ function App() {
       </section>
 
       <section className="grid">
-        {!user && (
+        {!user && !hasAdminSession && (
           <article className="card full-width">
             <div className="auth-tabs" role="tablist" aria-label="כניסה">
               <button
@@ -743,7 +744,7 @@ function App() {
           </article>
         )}
 
-        {!user && authTab === 'google' && (
+        {!user && !hasAdminSession && authTab === 'google' && (
           <article className="card">
             <h2>כניסה עם Google</h2>
             <p className="muted">לאחר הכניסה יש להשלים שם פרטי ושם משפחה כדי להופיע ברשימת הנרשמים בצורה תקינה.</p>
@@ -766,7 +767,7 @@ function App() {
           </article>
         )}
 
-        {!hasAdminSession && authTab === 'admin' && (
+        {!user && !hasAdminSession && authTab === 'admin' && (
           <article className="card">
             <h2>כניסת אדמין</h2>
             <p className="muted">כניסה זו מיועדת לניהול משחק קיים (עריכה/מחיקה).</p>
