@@ -166,6 +166,13 @@ input {
   padding: 10px;
 }
 
+.input-grid textarea {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  resize: vertical;
+}
+
 .players {
   list-style: none;
   margin: 0;

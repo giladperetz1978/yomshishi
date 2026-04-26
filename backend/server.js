@@ -1,8 +1,8 @@
 const cors = require('cors');
+const crypto = require('crypto');
 const dotenv = require('dotenv');
 const express = require('express');
 const fs = require('fs');
-const https = require('https');
 const { OAuth2Client } = require('google-auth-library');
 const path = require('path');
 const initSqlJs = require('sql.js');
@@ -26,6 +26,9 @@ const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
   .split(',')
   .map((item) => item.trim().toLowerCase())
   .filter(Boolean);
+const ADMIN_USERNAME = String(process.env.ADMIN_USERNAME || '').trim();
+const ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || '').trim();
+const ADMIN_TOKEN_TTL_MS = 1000 * 60 * 60 * 12;
 const REGISTRATION_LEAD_HOURS = Number(process.env.REGISTRATION_LEAD_HOURS || 24);
 const REGISTRATION_LEAD_MS = REGISTRATION_LEAD_HOURS * 60 * 60 * 1000;
 const GOOGLE_CLIENT_ID = String(process.env.GOOGLE_CLIENT_ID || '').trim();
@@ -43,6 +46,7 @@ if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
 let db;
 let reminderInterval = null;
 let reminderDispatchInFlight = false;
+const adminSessions = new Map();
 
 function all(sql, params = []) {
   const stmt = db.prepare(sql);
@@ -100,6 +104,63 @@ function isAdminEmail(email) {
   return ADMIN_EMAILS.includes(normalizeEmail(email));
 }
 
+function splitName(fullName) {
+  const normalized = String(fullName || '').trim().replace(/\s+/g, ' ');
+  if (!normalized) {
+    return { firstName: '', lastName: '' };
+  }
+
+  const parts = normalized.split(' ');
+  if (parts.length === 1) {
+    return { firstName: parts[0], lastName: '' };
+  }
+
+  return {
+    firstName: parts[0],
+    lastName: parts.slice(1).join(' '),
+  };
+}
+
+function composeDisplayName(firstName, lastName, fallback) {
+  const full = `${String(firstName || '').trim()} ${String(lastName || '').trim()}`.trim();
+  if (full) {
+    return full;
+  }
+
+  return String(fallback || '').trim();
+}
+
+function clearExpiredAdminSessions() {
+  const now = Date.now();
+  for (const [token, session] of adminSessions.entries()) {
+    if (!session || session.expiresAt <= now) {
+      adminSessions.delete(token);
+    }
+  }
+}
+
+function issueAdminToken() {
+  clearExpiredAdminSessions();
+  const token = crypto.randomBytes(24).toString('hex');
+  const expiresAt = Date.now() + ADMIN_TOKEN_TTL_MS;
+  adminSessions.set(token, { expiresAt });
+  return { token, expiresAt };
+}
+
+function isValidAdminToken(token) {
+  clearExpiredAdminSessions();
+  if (!token) {
+    return false;
+  }
+
+  const session = adminSessions.get(String(token));
+  if (!session) {
+    return false;
+  }
+
+  return session.expiresAt > Date.now();
+}
+
 function parseDate(value) {
   const date = new Date(String(value || ''));
   return Number.isNaN(date.getTime()) ? null : date;
@@ -141,15 +202,26 @@ function ensureColumn(tableName, columnName, definition) {
 }
 
 function getUserRow(userId) {
-  return get('SELECT id, name, email FROM users WHERE id = ?', [userId]);
+  return get('SELECT id, name, email, first_name, last_name FROM users WHERE id = ?', [userId]);
 }
 
-function upsertUser(name, email) {
-  const existingUser = get('SELECT id, name, email FROM users WHERE email = ?', [email]);
+function upsertUser(name, email, firstName = '', lastName = '') {
+  const existingUser = get(
+    'SELECT id, name, email, first_name, last_name FROM users WHERE email = ?',
+    [email]
+  );
+  const mergedName = composeDisplayName(firstName, lastName, name);
+
   if (existingUser) {
-    if (existingUser.name !== name) {
-      run('UPDATE users SET name = ?, updated_at = ? WHERE id = ?', [
-        name,
+    if (
+      existingUser.name !== mergedName ||
+      String(existingUser.first_name || '') !== String(firstName || '') ||
+      String(existingUser.last_name || '') !== String(lastName || '')
+    ) {
+      run('UPDATE users SET name = ?, first_name = ?, last_name = ?, updated_at = ? WHERE id = ?', [
+        mergedName,
+        String(firstName || ''),
+        String(lastName || ''),
         nowIso(),
         existingUser.id,
       ]);
@@ -159,9 +231,11 @@ function upsertUser(name, email) {
     return getUserRow(Number(existingUser.id));
   }
 
-  run('INSERT INTO users (name, email, created_at, updated_at) VALUES (?, ?, ?, ?)', [
-    name,
+  run('INSERT INTO users (name, email, first_name, last_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', [
+    mergedName,
     email,
+    String(firstName || ''),
+    String(lastName || ''),
     nowIso(),
     nowIso(),
   ]);
@@ -171,9 +245,13 @@ function upsertUser(name, email) {
 }
 
 function serializeUser(user) {
+  const firstName = String(user.first_name || '').trim();
+  const lastName = String(user.last_name || '').trim();
   return {
     id: Number(user.id),
-    name: user.name,
+    name: composeDisplayName(firstName, lastName, user.name),
+    firstName,
+    lastName,
     email: user.email,
     isAdmin: isAdminEmail(user.email),
   };
@@ -192,7 +270,17 @@ function getRequester(userId) {
   return { user };
 }
 
-function ensureAdmin(userId) {
+function ensureAdmin(userId, adminToken = '') {
+  if (isValidAdminToken(adminToken)) {
+    return {
+      user: {
+        id: 0,
+        name: 'Admin',
+        email: 'admin@local',
+      },
+    };
+  }
+
   const requester = getRequester(userId);
   if (requester.error) {
     return requester;
@@ -489,6 +577,8 @@ async function bootstrapDatabase() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
+      first_name TEXT NOT NULL DEFAULT '',
+      last_name TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -539,6 +629,25 @@ async function bootstrapDatabase() {
   ensureColumn('games', 'created_by_user_id', 'INTEGER');
   ensureColumn('games', 'reminder_due_at', 'TEXT');
   ensureColumn('games', 'reminder_sent_at', 'TEXT');
+  ensureColumn('users', 'first_name', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn('users', 'last_name', "TEXT NOT NULL DEFAULT ''");
+
+  const users = all('SELECT id, name, first_name, last_name FROM users');
+  users.forEach((user) => {
+    const existingFirst = String(user.first_name || '').trim();
+    const existingLast = String(user.last_name || '').trim();
+    if (existingFirst && existingLast) {
+      return;
+    }
+
+    const split = splitName(user.name);
+    run('UPDATE users SET first_name = ?, last_name = ?, updated_at = ? WHERE id = ?', [
+      existingFirst || split.firstName,
+      existingLast || split.lastName,
+      nowIso(),
+      user.id,
+    ]);
+  });
 
   run("UPDATE games SET title = COALESCE(NULLIF(title, ''), 'משחק 3x3')");
   run("UPDATE games SET location = COALESCE(location, '')");
@@ -591,6 +700,29 @@ async function startServer() {
       closedGroupEnabled: true,
       registrationLeadHours: REGISTRATION_LEAD_HOURS,
       googleClientId: GOOGLE_CLIENT_ID,
+      adminLoginEnabled: Boolean(ADMIN_USERNAME && ADMIN_PASSWORD),
+    });
+  });
+
+  app.post('/api/admin/login', (req, res) => {
+    if (!ADMIN_USERNAME || !ADMIN_PASSWORD) {
+      return res.status(503).json({ message: 'כניסת אדמין אינה מוגדרת בשרת.' });
+    }
+
+    const username = String(req.body?.username || '').trim();
+    const password = String(req.body?.password || '');
+    if (!username || !password) {
+      return res.status(400).json({ message: 'יש להזין שם משתמש וסיסמה.' });
+    }
+
+    if (username !== ADMIN_USERNAME || password !== ADMIN_PASSWORD) {
+      return res.status(401).json({ message: 'פרטי אדמין שגויים.' });
+    }
+
+    const session = issueAdminToken();
+    return res.json({
+      token: session.token,
+      expiresAt: new Date(session.expiresAt).toISOString(),
     });
   });
 
@@ -611,6 +743,8 @@ async function startServer() {
       const payload = ticket.getPayload();
       const email = normalizeEmail(payload?.email || '');
       const name = String(payload?.name || '').trim();
+      const givenName = String(payload?.given_name || '').trim();
+      const familyName = String(payload?.family_name || '').trim();
       const isEmailVerified = Boolean(payload?.email_verified);
 
       if (!email || !name || !isEmailVerified) {
@@ -622,11 +756,39 @@ async function startServer() {
         return res.status(403).json({ message: approved.message });
       }
 
-      const user = upsertUser(name, email);
+      const split = splitName(name);
+      const user = upsertUser(name, email, givenName || split.firstName, familyName || split.lastName);
       return res.json({ user: serializeUser(user) });
     } catch (_error) {
       return res.status(401).json({ message: 'אימות Google נכשל.' });
     }
+  });
+
+  app.patch('/api/users/:userId/profile', (req, res) => {
+    const userId = Number(req.params.userId);
+    const requester = getRequester(userId);
+    if (requester.error) {
+      return res.status(requester.error.status).json({ message: requester.error.message });
+    }
+
+    const firstName = String(req.body?.firstName || '').trim();
+    const lastName = String(req.body?.lastName || '').trim();
+    if (!firstName || !lastName) {
+      return res.status(400).json({ message: 'יש להזין שם פרטי ושם משפחה.' });
+    }
+
+    const displayName = `${firstName} ${lastName}`.trim();
+    run('UPDATE users SET first_name = ?, last_name = ?, name = ?, updated_at = ? WHERE id = ?', [
+      firstName,
+      lastName,
+      displayName,
+      nowIso(),
+      requester.user.id,
+    ]);
+    persistDb();
+
+    const updated = getUserRow(requester.user.id);
+    return res.json({ user: serializeUser(updated) });
   });
 
   app.post('/api/auth/register', (req, res) => {
@@ -724,7 +886,7 @@ async function startServer() {
 
   app.patch('/api/games/:gameId', (req, res) => {
     const userId = Number(req.body?.userId);
-    const requester = ensureAdmin(userId);
+    const requester = ensureAdmin(userId, String(req.body?.adminToken || ''));
     if (requester.error) {
       return res.status(requester.error.status).json({ message: requester.error.message });
     }
@@ -771,7 +933,7 @@ async function startServer() {
 
   app.delete('/api/games/:gameId', (req, res) => {
     const userId = Number(req.body?.userId);
-    const requester = ensureAdmin(userId);
+    const requester = ensureAdmin(userId, String(req.body?.adminToken || ''));
     if (requester.error) {
       return res.status(requester.error.status).json({ message: requester.error.message });
     }

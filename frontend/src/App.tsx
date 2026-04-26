@@ -7,6 +7,8 @@ type PlayerRole = 'PLAYING' | 'WAITING'
 type User = {
   id: number
   name: string
+  firstName: string
+  lastName: string
   email: string
   isAdmin: boolean
 }
@@ -49,6 +51,7 @@ type ApiConfig = {
   closedGroupEnabled: boolean
   registrationLeadHours: number
   googleClientId: string
+  adminLoginEnabled: boolean
 }
 
 type GameFormState = {
@@ -84,17 +87,14 @@ declare global {
 }
 
 const configuredApiBase = String(import.meta.env.VITE_API_BASE_URL || '').trim()
-// Same-origin (VPS serves both frontend and API)
 const API_BASE = configuredApiBase ? configuredApiBase.replace(/\/$/, '') : ''
 const USER_ID_KEY = 'yomshishi_user_id'
+const ADMIN_TOKEN_KEY = 'yomshishi_admin_token'
 
 function readStoredUserId(): number | null {
   try {
     const raw = localStorage.getItem(USER_ID_KEY)
-    if (!raw) {
-      return null
-    }
-
+    if (!raw) return null
     const parsed = Number(raw)
     return Number.isInteger(parsed) && parsed > 0 ? parsed : null
   } catch (_error) {
@@ -113,6 +113,30 @@ function writeStoredUserId(userId: number) {
 function clearStoredUserId() {
   try {
     localStorage.removeItem(USER_ID_KEY)
+  } catch (_error) {
+    // Ignore storage failures in locked-down browsers.
+  }
+}
+
+function readStoredAdminToken(): string {
+  try {
+    return String(localStorage.getItem(ADMIN_TOKEN_KEY) || '')
+  } catch (_error) {
+    return ''
+  }
+}
+
+function writeStoredAdminToken(token: string) {
+  try {
+    localStorage.setItem(ADMIN_TOKEN_KEY, token)
+  } catch (_error) {
+    // Ignore storage failures in locked-down browsers.
+  }
+}
+
+function clearStoredAdminToken() {
+  try {
+    localStorage.removeItem(ADMIN_TOKEN_KEY)
   } catch (_error) {
     // Ignore storage failures in locked-down browsers.
   }
@@ -194,6 +218,7 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
     const message = (payload as { message?: string })?.message || 'אירעה שגיאה בבקשה לשרת.'
     throw new Error(message)
   }
+
   return payload as T
 }
 
@@ -208,9 +233,24 @@ function App() {
   const [googleReady, setGoogleReady] = useState(false)
   const [gameForm, setGameForm] = useState<GameFormState>(() => createEmptyGameForm())
   const [isEditingGame, setIsEditingGame] = useState(false)
+  const [firstName, setFirstName] = useState('')
+  const [lastName, setLastName] = useState('')
+  const [adminUsername, setAdminUsername] = useState('')
+  const [adminPassword, setAdminPassword] = useState('')
+  const [adminToken, setAdminToken] = useState<string>(() => readStoredAdminToken())
   const googleButtonRef = useRef<HTMLDivElement | null>(null)
 
   const registeredUserId = useMemo(() => readStoredUserId(), [])
+
+  const isIos = useMemo(() => /iPad|iPhone|iPod/.test(navigator.userAgent), [])
+  const isStandalone = useMemo(() => {
+    const displayMode = window.matchMedia('(display-mode: standalone)').matches
+    const safariStandalone = Boolean((window.navigator as Navigator & { standalone?: boolean }).standalone)
+    return displayMode || safariStandalone
+  }, [])
+
+  const hasAdminSession = Boolean(adminToken)
+  const needsProfileCompletion = Boolean(user && (!user.firstName || !user.lastName))
 
   useEffect(() => {
     const onBeforeInstallPrompt = (event: Event) => {
@@ -231,6 +271,8 @@ function App() {
         if (registeredUserId && Number.isInteger(registeredUserId) && registeredUserId > 0) {
           const userResponse = await apiRequest<{ user: User }>(`/api/users/${registeredUserId}`)
           setUser(userResponse.user)
+          setFirstName(userResponse.user.firstName || '')
+          setLastName(userResponse.user.lastName || '')
           await refreshGame(userResponse.user.id)
         } else {
           await refreshGame()
@@ -283,9 +325,15 @@ function App() {
           body: JSON.stringify({ idToken: response.credential }),
         })
         setUser(authResponse.user)
+        setFirstName(authResponse.user.firstName || '')
+        setLastName(authResponse.user.lastName || '')
         writeStoredUserId(authResponse.user.id)
         await refreshGame(authResponse.user.id)
-        setSuccess('נכנסת בהצלחה עם Google.')
+        if (authResponse.user.firstName && authResponse.user.lastName) {
+          setSuccess('נכנסת בהצלחה עם Google.')
+        } else {
+          setSuccess('נכנסת בהצלחה. יש להשלים שם פרטי ושם משפחה כדי להמשיך.')
+        }
       } catch (requestError: unknown) {
         const errorMessage = requestError instanceof Error ? requestError.message : 'כניסה עם Google נכשלה.'
         setError(errorMessage)
@@ -321,15 +369,82 @@ function App() {
     clearStoredUserId()
     setUser(null)
     setGame(null)
+    setFirstName('')
+    setLastName('')
     setSuccess('התנתקת בהצלחה.')
     setError('')
   }
 
-  async function joinGame() {
-    if (!user || !game) return
+  function logoutAdmin() {
+    clearStoredAdminToken()
+    setAdminToken('')
+    setAdminUsername('')
+    setAdminPassword('')
+    setSuccess('יצאת ממצב אדמין.')
+    setError('')
+  }
+
+  async function loginAdmin(event: FormEvent) {
+    event.preventDefault()
     setError('')
     setSuccess('')
     setIsBusy(true)
+
+    try {
+      const response = await apiRequest<{ token: string; expiresAt: string }>('/api/admin/login', {
+        method: 'POST',
+        body: JSON.stringify({
+          username: adminUsername,
+          password: adminPassword,
+        }),
+      })
+
+      writeStoredAdminToken(response.token)
+      setAdminToken(response.token)
+      setAdminPassword('')
+      setSuccess('כניסת אדמין הצליחה. ניתן לערוך או למחוק משחק פעיל.')
+    } catch (requestError: unknown) {
+      const errorMessage = requestError instanceof Error ? requestError.message : 'כניסת אדמין נכשלה.'
+      setError(errorMessage)
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
+  async function saveProfile(event: FormEvent) {
+    event.preventDefault()
+    if (!user) return
+
+    setError('')
+    setSuccess('')
+    setIsBusy(true)
+
+    try {
+      const response = await apiRequest<{ user: User }>(`/api/users/${user.id}/profile`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          firstName,
+          lastName,
+        }),
+      })
+      setUser(response.user)
+      setFirstName(response.user.firstName)
+      setLastName(response.user.lastName)
+      setSuccess('השם נשמר בהצלחה.')
+    } catch (requestError: unknown) {
+      const errorMessage = requestError instanceof Error ? requestError.message : 'שמירת השם נכשלה.'
+      setError(errorMessage)
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
+  async function joinGame() {
+    if (!user || !game || needsProfileCompletion) return
+    setError('')
+    setSuccess('')
+    setIsBusy(true)
+
     try {
       const response = await apiRequest<{ game: Game }>('/api/games/current/join', {
         method: 'POST',
@@ -350,6 +465,7 @@ function App() {
     setError('')
     setSuccess('')
     setIsBusy(true)
+
     try {
       const response = await apiRequest<{ game: Game }>('/api/games/current/leave', {
         method: 'POST',
@@ -367,7 +483,7 @@ function App() {
 
   async function submitGameForm(event: FormEvent) {
     event.preventDefault()
-    if (!user) return
+    if (!user || needsProfileCompletion) return
 
     setError('')
     setSuccess('')
@@ -376,20 +492,21 @@ function App() {
     try {
       const payload = {
         userId: user.id,
+        adminToken,
         title: gameForm.title,
         location: gameForm.location,
         notes: gameForm.notes,
         gameDate: gameForm.gameDate,
       }
 
-      if (game && user.isAdmin && isEditingGame) {
+      if (game && (user.isAdmin || hasAdminSession) && isEditingGame) {
         const response = await apiRequest<{ game: Game }>(`/api/games/${game.id}`, {
           method: 'PATCH',
           body: JSON.stringify(payload),
         })
         setGame(response.game)
         setIsEditingGame(false)
-        setSuccess('פרטי המשחק עודכנו על ידי אדמין.')
+        setSuccess('פרטי המשחק עודכנו בהצלחה.')
       } else {
         const response = await apiRequest<{ game: Game; message?: string }>('/api/games', {
           method: 'POST',
@@ -409,19 +526,23 @@ function App() {
   }
 
   async function deleteGame() {
-    if (!user || !game || !user.isAdmin) return
+    if (!game || (!user?.isAdmin && !hasAdminSession)) return
     setError('')
     setSuccess('')
     setIsBusy(true)
+
     try {
       await apiRequest(`/api/games/${game.id}`, {
         method: 'DELETE',
-        body: JSON.stringify({ userId: user.id }),
+        body: JSON.stringify({
+          userId: user?.id || 0,
+          adminToken,
+        }),
       })
       setGame(null)
       setGameForm(createEmptyGameForm())
       setIsEditingGame(false)
-      setSuccess('המשחק נמחק על ידי אדמין.')
+      setSuccess('המשחק נמחק בהצלחה.')
     } catch (requestError: unknown) {
       const errorMessage = requestError instanceof Error ? requestError.message : 'מחיקת המשחק נכשלה.'
       setError(errorMessage)
@@ -472,7 +593,7 @@ function App() {
 
   async function promptInstall() {
     if (!installPrompt) {
-      setError('אפשרות התקנה עדיין לא זמינה בדפדפן זה.')
+      setError('התקנה אוטומטית לא זמינה כרגע בדפדפן זה.')
       return
     }
 
@@ -483,7 +604,7 @@ function App() {
 
   const isUserInGame = Boolean(user && game?.players.some((item) => item.userId === user.id))
   const canShowCreateForm = Boolean(user && !game)
-  const canShowAdminEditor = Boolean(user?.isAdmin && game)
+  const canShowAdminEditor = Boolean((user?.isAdmin || hasAdminSession) && game)
   const isGoogleConfigured = Boolean(apiConfig?.googleClientId)
   const isSecureOriginForGoogle =
     window.isSecureContext || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
@@ -492,14 +613,14 @@ function App() {
     <main className="app-shell">
       <section className="hero">
         <h1>ניהול משחק 3x3</h1>
-        <p>כל משתתף יכול ליצור משחק ידנית. רק אדמין יכול לערוך או למחוק משחק קיים.</p>
+        <p>כל משתתף יכול ליצור משחק ידנית. אדמין יכול לערוך או למחוק משחק קיים.</p>
       </section>
 
       <section className="grid">
         {!user && (
           <article className="card">
             <h2>כניסה עם Google</h2>
-            <p className="muted">המערכת פתוחה למשתמשים שאושרו מראש בלבד לפי האימייל בחשבון Google.</p>
+            <p className="muted">לאחר הכניסה יש להשלים שם פרטי ושם משפחה כדי להופיע ברשימת הנרשמים בצורה תקינה.</p>
             <div className="input-grid">
               {!isGoogleConfigured ? (
                 <p className="message message-error">
@@ -519,15 +640,50 @@ function App() {
           </article>
         )}
 
+        {apiConfig?.adminLoginEnabled && !hasAdminSession && (
+          <article className="card">
+            <h2>כניסת אדמין</h2>
+            <p className="muted">כניסה זו מיועדת לניהול משחק קיים (עריכה/מחיקה).</p>
+            <form className="input-grid" onSubmit={loginAdmin}>
+              <input
+                required
+                placeholder="שם משתמש אדמין"
+                value={adminUsername}
+                onChange={(event) => setAdminUsername(event.target.value)}
+              />
+              <input
+                required
+                type="password"
+                placeholder="סיסמת אדמין"
+                value={adminPassword}
+                onChange={(event) => setAdminPassword(event.target.value)}
+              />
+              <button disabled={isBusy} className="cta cta-primary" type="submit">
+                כניסה כאדמין
+              </button>
+            </form>
+          </article>
+        )}
+
+        {hasAdminSession && (
+          <article className="card">
+            <h2>מצב אדמין פעיל</h2>
+            <p className="muted">ניתן לערוך ולמחוק משחק פעיל גם ללא הרשאת אדמין באימייל.</p>
+            <button disabled={isBusy} className="cta cta-soft" onClick={logoutAdmin}>
+              יציאה ממצב אדמין
+            </button>
+          </article>
+        )}
+
         {user && (
           <article className="card">
             <h2>שלום, {user.name}</h2>
             <p className="muted">{user.email}</p>
-            {user.isAdmin && <p className="muted">הרשאה: ADMIN</p>}
+            {user.isAdmin && <p className="muted">הרשאה: ADMIN (אימייל)</p>}
             <div className="row" style={{ marginTop: 12 }}>
               {game && !isUserInGame ? (
                 <button
-                  disabled={isBusy || game.isRegistrationClosed}
+                  disabled={isBusy || game.isRegistrationClosed || needsProfileCompletion}
                   className="cta cta-primary"
                   onClick={joinGame}
                 >
@@ -541,9 +697,11 @@ function App() {
                 </button>
               ) : null}
 
-              <button disabled={isBusy || !installPrompt} className="cta cta-soft" onClick={promptInstall}>
-                התקנת האפליקציה
-              </button>
+              {installPrompt && (
+                <button disabled={isBusy} className="cta cta-soft" onClick={promptInstall}>
+                  התקנת האפליקציה
+                </button>
+              )}
 
               <button
                 disabled={isBusy || !apiConfig?.vapidPublicKey}
@@ -557,20 +715,54 @@ function App() {
                 התנתקות
               </button>
             </div>
+            {!installPrompt && isIos && !isStandalone && (
+              <p className="message message-ok" style={{ marginTop: 10 }}>
+                iPhone/iPad: להתקנה לחץ על Share בדפדפן ואז Add to Home Screen.
+              </p>
+            )}
+            {!installPrompt && !isIos && (
+              <p className="muted" style={{ marginTop: 10 }}>
+                התקנה אוטומטית תופיע בדפדפנים תומכים (בעיקר Android/Chrome).
+              </p>
+            )}
+          </article>
+        )}
+
+        {user && needsProfileCompletion && (
+          <article className="card full-width">
+            <h2>השלמת פרטים אישיים</h2>
+            <p className="muted">לפני הרשמה למשחק יש לשמור שם פרטי ושם משפחה תקינים.</p>
+            <form className="input-grid" onSubmit={saveProfile}>
+              <input
+                required
+                placeholder="שם פרטי"
+                value={firstName}
+                onChange={(event) => setFirstName(event.target.value)}
+              />
+              <input
+                required
+                placeholder="שם משפחה"
+                value={lastName}
+                onChange={(event) => setLastName(event.target.value)}
+              />
+              <button disabled={isBusy} className="cta cta-primary" type="submit">
+                שמירת פרטים
+              </button>
+            </form>
           </article>
         )}
 
         {(canShowCreateForm || canShowAdminEditor) && (
           <article className="card full-width">
-            <h2>{isEditingGame ? 'עריכת משחק (ADMIN)' : 'יצירת משחק חדש'}</h2>
+            <h2>{isEditingGame ? 'עריכת משחק' : 'יצירת משחק חדש'}</h2>
             <p className="muted">
               מי שיוצר את המשחק אינו נרשם אוטומטית. כולם, כולל היוצר, חייבים להירשם עד{' '}
               {apiConfig?.registrationLeadHours || 24} שעות לפני המשחק.
             </p>
             {canShowAdminEditor && !isEditingGame ? (
               <div className="row" style={{ marginTop: 12 }}>
-                <button className="cta cta-primary" disabled={isBusy} onClick={() => setIsEditingGame(true)}>
-                  עריכת משחק
+                <button className="cta cta-primary" disabled={isBusy || needsProfileCompletion} onClick={() => setIsEditingGame(true)}>
+                  עריכת משחק (תאריך/שעה/פרטים)
                 </button>
                 <button className="cta cta-danger" disabled={isBusy} onClick={deleteGame}>
                   מחיקת משחק
@@ -602,7 +794,7 @@ function App() {
                   style={{ minHeight: 100 }}
                 />
                 <div className="row">
-                  <button disabled={isBusy} className="cta cta-primary" type="submit">
+                  <button disabled={isBusy || needsProfileCompletion} className="cta cta-primary" type="submit">
                     {isEditingGame ? 'שמירת שינויים' : 'יצירת משחק'}
                   </button>
                   {isEditingGame && (
@@ -621,6 +813,13 @@ function App() {
           </article>
         )}
 
+        {user && game && !canShowAdminEditor && (
+          <article className="card full-width">
+            <h3>יצירת משחק חדש</h3>
+            <p className="muted">כבר קיים משחק פעיל במערכת. כדי לשנות תאריך/שעה יש הרשאת אדמין.</p>
+          </article>
+        )}
+
         <article className="card full-width">
           <h2>המשחק הקרוב</h2>
           {game ? (
@@ -631,12 +830,15 @@ function App() {
                 <span className="muted">תאריך: {new Date(game.gameDate).toLocaleString('he-IL')}</span>
                 <span className="muted">רשומים: {game.playersCount}/12</span>
               </div>
-              {game.location && <p>מיקום: <strong>{game.location}</strong></p>}
+              {game.location && (
+                <p>
+                  מיקום: <strong>{game.location}</strong>
+                </p>
+              )}
               {game.notes && <p className="muted">הערות: {game.notes}</p>}
               {game.createdByName && <p className="muted">נוצר על ידי: {game.createdByName}</p>}
               <p className="muted">
-                דדליין הרשמה: {new Date(game.registrationDeadline).toLocaleString('he-IL')}.
-                תזכורת Push תישלח למי שהתקין את האפליקציה בדיוק בזמן הזה.
+                דדליין הרשמה: {new Date(game.registrationDeadline).toLocaleString('he-IL')}. תזכורת Push תישלח למי שהתקין את האפליקציה בדיוק בזמן הזה.
               </p>
               {user && game.viewerPosition && (
                 <p>
@@ -645,11 +847,11 @@ function App() {
                 </p>
               )}
               {game.isRegistrationClosed && (
-                <p className="message message-error">ההרשמה נסגרה למשחק הזה כי נותרו פחות מ-24 שעות עד הפתיחה.</p>
+                <p className="message message-error">
+                  ההרשמה נסגרה למשחק הזה כי נותרו פחות מ-{apiConfig?.registrationLeadHours || 24} שעות עד הפתיחה.
+                </p>
               )}
-              <p className="muted">
-                כללי ליגה: 6+ מאשר משחק, 10-11 ברשימת המתנה, 12 נועלים את המשחק.
-              </p>
+              <p className="muted">כללי ליגה: 6+ מאשר משחק, 10-11 ברשימת המתנה, 12 נועלים את המשחק.</p>
             </>
           ) : (
             <p className="muted">אין כרגע משחק מתוכנן. כל משתתף רשום יכול ליצור משחק חדש.</p>
@@ -684,4 +886,3 @@ function App() {
 }
 
 export default App
-

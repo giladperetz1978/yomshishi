@@ -25,11 +25,13 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           APPROVED_EMAILS: ${{ secrets.APPROVED_EMAILS }}
           ADMIN_EMAILS: ${{ secrets.ADMIN_EMAILS }}
+          ADMIN_USERNAME: ${{ secrets.ADMIN_USERNAME }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
         with:
           host: ${{ secrets.CONTABO_HOST }}
           username: ${{ secrets.CONTABO_USER }}
           key: ${{ secrets.CONTABO_SSH_KEY }}
-          envs: GOOGLE_CLIENT_ID,APPROVED_EMAILS,ADMIN_EMAILS
+          envs: GOOGLE_CLIENT_ID,APPROVED_EMAILS,ADMIN_EMAILS,ADMIN_USERNAME,ADMIN_PASSWORD
           script: |
             set -e
             export DEBIAN_FRONTEND=noninteractive
@@ -92,6 +94,8 @@ jobs:
             if [ -n "$GOOGLE_CLIENT_ID" ]; then upsert_env GOOGLE_CLIENT_ID "$GOOGLE_CLIENT_ID"; fi
             if [ -n "$APPROVED_EMAILS" ]; then upsert_env APPROVED_EMAILS "$APPROVED_EMAILS"; fi
             if [ -n "$ADMIN_EMAILS" ]; then upsert_env ADMIN_EMAILS "$ADMIN_EMAILS"; fi
+            if [ -n "$ADMIN_USERNAME" ]; then upsert_env ADMIN_USERNAME "$ADMIN_USERNAME"; fi
+            if [ -n "$ADMIN_PASSWORD" ]; then upsert_env ADMIN_PASSWORD "$ADMIN_PASSWORD"; fi
             upsert_env FRONTEND_ORIGIN "https://$PUBLIC_APP_DOMAIN,http://localhost:5173"
             npm ci --omit=dev
             pm2 delete yomshishi-backend || true
