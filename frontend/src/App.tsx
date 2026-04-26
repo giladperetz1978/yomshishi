@@ -164,9 +164,9 @@ function getStatusLabel(status: GameStatus): string {
     case 'OPEN':
       return 'פתוח להרשמה'
     case 'CONFIRMED':
-      return 'מאושר (מינימום 6)'
+      return 'מאושר (6-8 שחקנים)'
     case 'WAITING':
-      return 'רשימת המתנה'
+      return 'הרשימה הראשית מלאה — רשימת המתנה פתוחה'
     case 'LOCKED':
       return 'נעול (12 שחקנים)'
     case 'CANCELLED':
@@ -815,6 +815,7 @@ function App() {
   const isSecureOriginForGoogle =
     window.isSecureContext || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
   const showCreateBlock = canShowCreateForm || canShowAdminEditor
+  const isLandingMode = !user && !hasAdminSession
 
   return (
     <main className="app-shell">
@@ -842,9 +843,12 @@ function App() {
           </div>
 
           <div className="brand-block">
-            <p className="hero-kicker">Friday Hoops</p>
-            <h1>ליגת שישי 3x3</h1>
-            <p className="hero-subtitle">אווירת מגרש, הרשמה מהירה, ותמונת מצב ברורה לכל משחק.</p>
+            <h1 className="hero-title-neon" aria-label="Friday Hoops">
+              <span className="hero-title-line">FRIDAY</span>
+              <span className="hero-title-line">HOOPS</span>
+            </h1>
+            <p className="hero-tagline">ליגת שישי 3x3</p>
+            <p className="hero-subtitle">אווירת מגרש, הרשמה מהירה, ותמונת מצב ברורה לכל משחק</p>
           </div>
         </div>
 
@@ -881,17 +885,22 @@ function App() {
 
       <section className="grid">
         {!user && !hasAdminSession && authTab === 'google' && (
-          <article className="card full-width card-compact">
+          <article className="card full-width card-compact landing-card">
             <div className="section-head">
               <div>
-                <p className="section-kicker">Start Here</p>
-                <h2>כניסה והרשמה ראשונית</h2>
+                <p className="section-kicker">How It Works</p>
+                <h2>איך זה עובד?</h2>
               </div>
               <button type="button" className="auth-tab" onClick={() => setAuthTab('admin')}>
                 מעבר ל-ADMIN
               </button>
             </div>
-            <p className="muted">אחרי הכניסה הראשונה נשמור את המשתמש, ונראה כאן רק את השם וההתנתקות.</p>
+            <ul className="landing-list">
+              <li>הרשמה חד פעמית עם Google</li>
+              <li>השלמת פרטים בסיסיים (שם פרטי ומשפחה)</li>
+              <li>הרשמה למשחקים ישירות מהאפליקציה</li>
+              <li>צפיה בשמות השחקנים הרשומים בזמן אמת</li>
+            </ul>
             <div className="input-grid">
               {!isGoogleConfigured ? (
                 <p className="message message-error">
@@ -907,6 +916,22 @@ function App() {
                   )}
                 </>
               )}
+            </div>
+            <div className="auth-actions">
+              <button
+                type="button"
+                className="cta cta-primary landing-start-btn"
+                onClick={() => {
+                  if (!googleReady) return
+                  const googleButton = googleButtonRef.current?.querySelector('div[role="button"]') as
+                    | HTMLElement
+                    | null
+                  googleButton?.click()
+                }}
+                disabled={!googleReady || isBusy || !isGoogleConfigured || !isSecureOriginForGoogle}
+              >
+                התחל עכשיו
+              </button>
             </div>
           </article>
         )}
@@ -970,7 +995,9 @@ function App() {
           </article>
         )}
 
-        <article className="card full-width game-spotlight">
+        {!isLandingMode && (
+          <>
+            <article className="card full-width game-spotlight">
           <div className="section-head">
             <div>
               <p className="section-kicker">Tip Off</p>
@@ -1014,9 +1041,17 @@ function App() {
                 </p>
               )}
 
+              {game?.status === 'WAITING' && !game.isRegistrationClosed && (
+                <p className="message message-ok inline-message">
+                  הרשימה הראשית מלאה (9 שחקנים) — רשימת המתנה פתוחה למיקומים 10–11.
+                </p>
+              )}
+
               {game?.isRegistrationClosed && (
                 <p className="message message-error inline-message">
-                  ההרשמה נסגרה כי נותרו פחות מ-{apiConfig?.registrationLeadHours || 24} שעות לפתיחה.
+                  {game.status === 'LOCKED'
+                    ? 'המשחק נעול — 12 שחקנים נרשמו. רשימת ההמתנה הצטרפה לרשימה הכללית.'
+                    : `ההרשמה נסגרה כי נותרו פחות מ-${apiConfig?.registrationLeadHours || 24} שעות לפתיחה.`}
                 </p>
               )}
 
@@ -1027,7 +1062,11 @@ function App() {
                   className="cta cta-primary"
                   onClick={joinGame}
                 >
-                  {game.isRegistrationClosed ? 'ההרשמה נסגרה' : 'הצטרפות למשחק'}
+                  {game.isRegistrationClosed
+                    ? 'ההרשמה נסגרה'
+                    : game.playersCount >= 9
+                    ? 'הצטרפות לרשימת המתנה'
+                    : 'הצטרפות למשחק'}
                 </button>
               ) : null}
 
@@ -1041,10 +1080,10 @@ function App() {
           ) : (
             <p className="muted">אין כרגע משחק מתוכנן. אם יש הרשאה, אפשר להקים מיד משחק חדש.</p>
           )}
-        </article>
+            </article>
 
-        {nextGame && (
-          <article className="card full-width next-game-card">
+            {nextGame && (
+              <article className="card full-width next-game-card">
             <div className="section-head">
               <div>
                 <p className="section-kicker">On Deck</p>
@@ -1066,11 +1105,11 @@ function App() {
               <div className="meta-pill">{nextGame.location || 'מיקום יעודכן'}</div>
               <div className="meta-pill">דדליין: {new Date(nextGame.registrationDeadline).toLocaleString('he-IL')}</div>
             </div>
-          </article>
-        )}
+              </article>
+            )}
 
-        {user && (
-          <article className="card full-width card-compact">
+            {user && (
+              <article className="card full-width card-compact">
             <div className="section-head">
               <div>
                 <p className="section-kicker">Alerts</p>
@@ -1111,11 +1150,11 @@ function App() {
             {!installPrompt && !isIos && (
               <p className="muted">התקנה אוטומטית תופיע בדפדפנים תומכים, בעיקר Android/Chrome.</p>
             )}
-          </article>
-        )}
+              </article>
+            )}
 
-        {showCreateBlock && (
-          <article className="card full-width">
+            {showCreateBlock && (
+              <article className="card full-width">
             <div className="section-head">
               <div>
                 <p className="section-kicker">Next Match Setup</p>
@@ -1200,11 +1239,11 @@ function App() {
                 </div>
               </form>
             )}
-          </article>
-        )}
+              </article>
+            )}
 
-        {!showCreateBlock && (
-          <article className="card full-width">
+            {!showCreateBlock && (
+              <article className="card full-width">
             <div className="section-head">
               <div>
                 <p className="section-kicker">Schedule Locked</p>
@@ -1212,11 +1251,11 @@ function App() {
               </div>
             </div>
             <p className="muted">כבר קיימים שני משחקים עתידיים. אחרי מחיקה או סיום של אחד מהם, אזור ההקמה יחזור להופיע.</p>
-          </article>
-        )}
+              </article>
+            )}
 
-        {rosterGames.map((rosterGame, index) => (
-          <article key={rosterGame.id} className="card full-width roster-card">
+            {rosterGames.map((rosterGame, index) => (
+              <article key={rosterGame.id} className="card full-width roster-card">
             <div className="section-head">
               <div>
                 <p className="section-kicker">{index === 0 ? 'Lineup' : 'Next Lineup'}</p>
@@ -1243,8 +1282,10 @@ function App() {
                 <li className="muted">עדיין אין נרשמים למשחק הזה.</li>
               )}
             </ul>
-          </article>
-        ))}
+              </article>
+            ))}
+          </>
+        )}
       </section>
 
       {error && <section className="message message-error">{error}</section>}

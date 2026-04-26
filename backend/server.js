@@ -188,7 +188,7 @@ function formatDateTime(dateValue) {
 function gameStatusByCount(totalPlayers, cancelled) {
   if (cancelled) return 'CANCELLED';
   if (totalPlayers === 12) return 'LOCKED';
-  if (totalPlayers >= 10) return 'WAITING';
+  if (totalPlayers >= 9) return 'WAITING';
   if (totalPlayers >= 6) return 'CONFIRMED';
   return 'OPEN';
 }
@@ -482,8 +482,8 @@ function serializeGame(gameId, viewerUserId = null) {
     createdByUserId: game.created_by_user_id ? Number(game.created_by_user_id) : null,
     createdByName: game.created_by_name || '',
     registrationDeadline: registrationDeadlineIso(game.game_date),
-    canRegister: isRegistrationOpen(game.game_date),
-    isRegistrationClosed: !isRegistrationOpen(game.game_date),
+    canRegister: isRegistrationOpen(game.game_date) && players.length < 12,
+    isRegistrationClosed: !isRegistrationOpen(game.game_date) || players.length >= 12,
     reminderDueAt: game.reminder_due_at || registrationDeadlineIso(game.game_date),
     reminderSentAt: game.reminder_sent_at || null,
     createdAt: game.created_at,
