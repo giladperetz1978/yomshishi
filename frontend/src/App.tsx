@@ -483,6 +483,9 @@ function App() {
   const isUserInGame = Boolean(user && game?.players.some((item) => item.userId === user.id))
   const canShowCreateForm = Boolean(user && !game)
   const canShowAdminEditor = Boolean(user?.isAdmin && game)
+  const isGoogleConfigured = Boolean(apiConfig?.googleClientId)
+  const isSecureOriginForGoogle =
+    window.isSecureContext || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
 
   return (
     <main className="app-shell">
@@ -497,9 +500,19 @@ function App() {
             <h2>כניסה עם Google</h2>
             <p className="muted">המערכת פתוחה למשתמשים שאושרו מראש בלבד לפי האימייל בחשבון Google.</p>
             <div className="input-grid">
-              <div ref={googleButtonRef} style={{ minHeight: 44 }} />
-              {!googleReady && (
-                <p className="muted">טוען כפתור Google... אם הוא לא מופיע, רענן את הדף.</p>
+              {!isGoogleConfigured ? (
+                <p className="message message-error">
+                  Google Sign-In לא מוגדר כרגע בשרת. יש להגדיר GOOGLE_CLIENT_ID בסביבת הפרודקשן.
+                </p>
+              ) : !isSecureOriginForGoogle ? (
+                <p className="message message-error">Google Sign-In דורש HTTPS (או localhost) כדי להציג את הכפתור.</p>
+              ) : (
+                <>
+                  <div ref={googleButtonRef} style={{ minHeight: 44 }} />
+                  {!googleReady && (
+                    <p className="muted">טוען כפתור Google... אם הוא לא מופיע, רענן את הדף.</p>
+                  )}
+                </>
               )}
             </div>
           </article>

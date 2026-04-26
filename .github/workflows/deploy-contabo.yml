@@ -21,10 +21,15 @@ jobs:
 
       - name: Deploy application on VPS
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          APPROVED_EMAILS: ${{ secrets.APPROVED_EMAILS }}
+          ADMIN_EMAILS: ${{ secrets.ADMIN_EMAILS }}
         with:
           host: ${{ secrets.CONTABO_HOST }}
           username: ${{ secrets.CONTABO_USER }}
           key: ${{ secrets.CONTABO_SSH_KEY }}
+          envs: GOOGLE_CLIENT_ID,APPROVED_EMAILS,ADMIN_EMAILS
           script: |
             set -e
             export DEBIAN_FRONTEND=noninteractive
@@ -60,6 +65,20 @@ jobs:
             npm ci
             npm run build
             cd ~/apps/yomshishi/backend
+            touch .env
+            upsert_env() {
+              key="$1"
+              value="$2"
+              escaped_value=$(printf '%s' "$value" | sed -e 's/[\\&/]/\\\\&/g')
+              if grep -q "^${key}=" .env; then
+                sed -i "s/^${key}=.*/${key}=${escaped_value}/" .env
+              else
+                printf '%s=%s\n' "$key" "$value" >> .env
+              fi
+            }
+            if [ -n "$GOOGLE_CLIENT_ID" ]; then upsert_env GOOGLE_CLIENT_ID "$GOOGLE_CLIENT_ID"; fi
+            if [ -n "$APPROVED_EMAILS" ]; then upsert_env APPROVED_EMAILS "$APPROVED_EMAILS"; fi
+            if [ -n "$ADMIN_EMAILS" ]; then upsert_env ADMIN_EMAILS "$ADMIN_EMAILS"; fi
             npm ci --omit=dev
             pm2 delete yomshishi-backend || true
             pm2 start ~/apps/yomshishi/backend/server.js --name yomshishi-backend
