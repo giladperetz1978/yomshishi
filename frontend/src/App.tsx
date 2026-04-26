@@ -252,6 +252,7 @@ function App() {
   const [googleReady, setGoogleReady] = useState(false)
   const [gameForm, setGameForm] = useState<GameFormState>(() => createEmptyGameForm())
   const [isEditingGame, setIsEditingGame] = useState(false)
+  const [editingGameId, setEditingGameId] = useState<number | null>(null)
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
   const [adminUsername, setAdminUsername] = useState('gilad')
@@ -319,16 +320,16 @@ function App() {
   }, [registeredUserId])
 
   useEffect(() => {
-    if (!game) {
-      setIsEditingGame(false)
-      setGameForm(createEmptyGameForm())
+    if (!isEditingGame) {
       return
     }
 
-    if (isEditingGame) {
-      setGameForm(gameToForm(game))
+    const targetGame =
+      (editingGameId ? upcomingGames.find((item) => item.id === editingGameId) : null) || game
+    if (targetGame) {
+      setGameForm(gameToForm(targetGame))
     }
-  }, [game, isEditingGame])
+  }, [game, isEditingGame, editingGameId, upcomingGames])
 
   useEffect(() => {
     if (user || !apiConfig?.googleClientId || !googleButtonRef.current) {
@@ -472,6 +473,7 @@ function App() {
       setUser(response.user)
       setFirstName(response.user.firstName)
       setLastName(response.user.lastName)
+      await refreshAll(response.user.id)
       setSuccess('השם נשמר בהצלחה.')
     } catch (requestError: unknown) {
       const errorMessage = requestError instanceof Error ? requestError.message : 'שמירת השם נכשלה.'
@@ -527,6 +529,43 @@ function App() {
 
   async function submitGameForm(event: FormEvent) {
     event.preventDefault()
+    if (isEditingGame) {
+      const canEditAsAdmin = Boolean(user?.isAdmin || hasAdminSession)
+      const targetGameId = editingGameId || game?.id || null
+      if (!canEditAsAdmin || !targetGameId) {
+        return
+      }
+
+      setError('')
+      setSuccess('')
+      setIsBusy(true)
+      try {
+        const payload = {
+          userId: user?.id || 0,
+          adminToken,
+          title: gameForm.title,
+          location: gameForm.location,
+          notes: gameForm.notes,
+          gameDate: gameForm.gameDate,
+        }
+        const response = await apiRequest<{ game: Game }>(`/api/games/${targetGameId}`, {
+          method: 'PATCH',
+          body: JSON.stringify(payload),
+        })
+        setGame(response.game)
+        await refreshUpcomingGames(user?.id)
+        setIsEditingGame(false)
+        setEditingGameId(null)
+        setSuccess('פרטי המשחק עודכנו בהצלחה.')
+      } catch (requestError: unknown) {
+        const errorMessage = requestError instanceof Error ? requestError.message : 'שמירת המשחק נכשלה.'
+        setError(errorMessage)
+      } finally {
+        setIsBusy(false)
+      }
+      return
+    }
+
     if (!user || needsProfileCompletion) return
 
     setError('')
@@ -543,26 +582,15 @@ function App() {
         gameDate: gameForm.gameDate,
       }
 
-      if (game && (user.isAdmin || hasAdminSession) && isEditingGame) {
-        const response = await apiRequest<{ game: Game }>(`/api/games/${game.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify(payload),
-        })
-        setGame(response.game)
-        await refreshUpcomingGames(user.id)
-        setIsEditingGame(false)
-        setSuccess('פרטי המשחק עודכנו בהצלחה.')
-      } else {
-        const response = await apiRequest<{ game: Game; message?: string }>('/api/games', {
-          method: 'POST',
-          body: JSON.stringify(payload),
-        })
-        setGame(response.game)
-        await refreshUpcomingGames(user.id)
-        setSuccess(
-          response.message || 'המשחק נוצר. שים לב: גם מי שיצר את המשחק חייב להירשם אליו בנפרד.'
-        )
-      }
+      const response = await apiRequest<{ game: Game; message?: string }>('/api/games', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+      setGame(response.game)
+      await refreshUpcomingGames(user.id)
+      setSuccess(
+        response.message || 'המשחק נוצר. שים לב: גם מי שיצר את המשחק חייב להירשם אליו בנפרד.'
+      )
     } catch (requestError: unknown) {
       const errorMessage = requestError instanceof Error ? requestError.message : 'שמירת המשחק נכשלה.'
       setError(errorMessage)
@@ -571,24 +599,28 @@ function App() {
     }
   }
 
-  async function deleteGame() {
-    if (!game || (!user?.isAdmin && !hasAdminSession)) return
+  async function deleteGame(targetGameId?: number) {
+    const deleteId = targetGameId || game?.id
+    if (!deleteId || (!user?.isAdmin && !hasAdminSession)) return
     setError('')
     setSuccess('')
     setIsBusy(true)
 
     try {
-      await apiRequest(`/api/games/${game.id}`, {
+      await apiRequest(`/api/games/${deleteId}`, {
         method: 'DELETE',
         body: JSON.stringify({
           userId: user?.id || 0,
           adminToken,
         }),
       })
-      setGame(null)
+      if (game?.id === deleteId) {
+        setGame(null)
+      }
       setGameForm(createEmptyGameForm())
       setIsEditingGame(false)
-      await refreshUpcomingGames(user?.id)
+      setEditingGameId(null)
+      await refreshAll(user?.id)
       setSuccess('המשחק נמחק בהצלחה.')
     } catch (requestError: unknown) {
       const errorMessage = requestError instanceof Error ? requestError.message : 'מחיקת המשחק נכשלה.'
@@ -673,7 +705,7 @@ function App() {
 
   const isUserInGame = Boolean(user && game?.players.some((item) => item.userId === user.id))
   const canShowCreateForm = Boolean(user && upcomingGames.length < maxActiveGames)
-  const canShowAdminEditor = Boolean((user?.isAdmin || hasAdminSession) && game)
+  const canShowAdminEditor = Boolean((user?.isAdmin || hasAdminSession) && upcomingGames.length)
   const isGoogleConfigured = Boolean(apiConfig?.googleClientId)
   const isSecureOriginForGoogle =
     window.isSecureContext || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
@@ -830,10 +862,14 @@ function App() {
           </article>
         )}
 
-        {user && needsProfileCompletion && (
+        {user && (
           <article className="card full-width">
-            <h2>השלמת פרטים אישיים</h2>
-            <p className="muted">לפני הרשמה למשחק יש לשמור שם פרטי ושם משפחה תקינים.</p>
+            <h2>{needsProfileCompletion ? 'השלמת פרטים אישיים' : 'פרטים אישיים'}</h2>
+            <p className="muted">
+              {needsProfileCompletion
+                ? 'לפני הרשמה למשחק יש לשמור שם פרטי ושם משפחה תקינים.'
+                : 'אפשר לעדכן שם פרטי ושם משפחה בכל זמן. השם נשמר לפי האימייל לכל דפדפן ומכשיר.'}
+            </p>
             <form className="input-grid" onSubmit={saveProfile}>
               <input
                 required
@@ -863,12 +899,29 @@ function App() {
             </p>
             {canShowAdminEditor && !isEditingGame ? (
               <div className="row" style={{ marginTop: 12 }}>
-                <button className="cta cta-primary" disabled={isBusy || needsProfileCompletion} onClick={() => setIsEditingGame(true)}>
-                  עריכת משחק (תאריך/שעה/פרטים)
-                </button>
-                <button className="cta cta-danger" disabled={isBusy} onClick={deleteGame}>
-                  מחיקת משחק
-                </button>
+                {upcomingGames.map((item) => (
+                  <button
+                    key={`edit-${item.id}`}
+                    className="cta cta-primary"
+                    disabled={isBusy}
+                    onClick={() => {
+                      setEditingGameId(item.id)
+                      setIsEditingGame(true)
+                    }}
+                  >
+                    עריכת {new Date(item.gameDate).toLocaleDateString('he-IL')}
+                  </button>
+                ))}
+                {upcomingGames.map((item) => (
+                  <button
+                    key={`delete-${item.id}`}
+                    className="cta cta-danger"
+                    disabled={isBusy}
+                    onClick={() => deleteGame(item.id)}
+                  >
+                    מחיקת {new Date(item.gameDate).toLocaleDateString('he-IL')}
+                  </button>
+                ))}
               </div>
             ) : (
               <form className="input-grid" onSubmit={submitGameForm}>
@@ -904,7 +957,10 @@ function App() {
                       disabled={isBusy}
                       className="cta cta-soft"
                       type="button"
-                      onClick={() => setIsEditingGame(false)}
+                      onClick={() => {
+                        setIsEditingGame(false)
+                        setEditingGameId(null)
+                      }}
                     >
                       ביטול
                     </button>

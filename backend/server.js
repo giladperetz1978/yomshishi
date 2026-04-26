@@ -217,15 +217,26 @@ function upsertUser(name, email, firstName = '', lastName = '') {
   const mergedName = composeDisplayName(firstName, lastName, name);
 
   if (existingUser) {
+    const isProfileCompleted = Number(existingUser.profile_completed) === 1;
+    const nextFirstName = isProfileCompleted
+      ? String(existingUser.first_name || '')
+      : String(firstName || '');
+    const nextLastName = isProfileCompleted
+      ? String(existingUser.last_name || '')
+      : String(lastName || '');
+    const nextDisplayName = isProfileCompleted
+      ? composeDisplayName(existingUser.first_name, existingUser.last_name, existingUser.name)
+      : mergedName;
+
     if (
-      existingUser.name !== mergedName ||
-      String(existingUser.first_name || '') !== String(firstName || '') ||
-      String(existingUser.last_name || '') !== String(lastName || '')
+      String(existingUser.name || '') !== String(nextDisplayName || '') ||
+      String(existingUser.first_name || '') !== String(nextFirstName || '') ||
+      String(existingUser.last_name || '') !== String(nextLastName || '')
     ) {
       run('UPDATE users SET name = ?, first_name = ?, last_name = ?, updated_at = ? WHERE id = ?', [
-        mergedName,
-        String(firstName || ''),
-        String(lastName || ''),
+        nextDisplayName,
+        nextFirstName,
+        nextLastName,
         nowIso(),
         existingUser.id,
       ]);
