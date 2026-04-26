@@ -1,6 +1,12 @@
 name: Deploy Backend To Contabo VPS
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - '.github/workflows/deploy-contabo.yml'
   workflow_dispatch:
 
 jobs:
@@ -10,22 +16,46 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Copy backend to VPS
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.CONTABO_HOST }}
-          username: ${{ secrets.CONTABO_USER }}
-          key: ${{ secrets.CONTABO_SSH_KEY }}
-          source: "backend/*"
-          target: "~/apps/yomshishi"
-
-      - name: Install and restart service
+      - name: Deploy application on VPS
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.CONTABO_HOST }}
           username: ${{ secrets.CONTABO_USER }}
           key: ${{ secrets.CONTABO_SSH_KEY }}
           script: |
+            set -e
+            export DEBIAN_FRONTEND=noninteractive
+            mkdir -p ~/apps
+            if [ ! -d ~/apps/yomshishi/.git ]; then
+              git clone https://github.com/${{ github.repository }}.git ~/apps/yomshishi
+            fi
+            cd ~/apps/yomshishi
+            git fetch origin main
+            git reset --hard origin/main
+            if command -v apt-get >/dev/null 2>&1; then
+              apt-get update -y
+              apt-get install -y curl git ca-certificates
+              if ! command -v node >/dev/null 2>&1; then
+                curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+                apt-get install -y nodejs
+              fi
+            fi
+            if ! command -v pm2 >/dev/null 2>&1; then
+              npm install -g pm2
+            fi
+            if command -v ufw >/dev/null 2>&1; then
+              ufw allow 22/tcp || true
+              ufw allow 8787/tcp || true
+            elif command -v firewall-cmd >/dev/null 2>&1; then
+              firewall-cmd --permanent --add-port=22/tcp || true
+              firewall-cmd --permanent --add-port=8787/tcp || true
+              firewall-cmd --reload || true
+            fi
+            cd ~/apps/yomshishi/frontend
+            npm ci
+            npm run build
             cd ~/apps/yomshishi/backend
             npm ci --omit=dev
             pm2 restart yomshishi-backend || pm2 start server.js --name yomshishi-backend
+            pm2 save
+            curl --fail http://127.0.0.1:8787/api/health

@@ -8,6 +8,7 @@ type User = {
   id: number
   name: string
   email: string
+  isAdmin: boolean
 }
 
 type Player = {
@@ -22,6 +23,9 @@ type Player = {
 
 type Game = {
   id: number
+  title: string
+  location: string
+  notes: string
   gameDate: string
   status: GameStatus
   isCancelled: boolean
@@ -31,11 +35,26 @@ type Game = {
   players: Player[]
   viewerPosition: number | null
   viewerRole: PlayerRole | null
+  createdByUserId: number | null
+  createdByName: string
+  registrationDeadline: string
+  canRegister: boolean
+  isRegistrationClosed: boolean
+  reminderDueAt: string
+  reminderSentAt: string | null
 }
 
 type ApiConfig = {
   vapidPublicKey: string
   closedGroupEnabled: boolean
+  registrationLeadHours: number
+}
+
+type GameFormState = {
+  title: string
+  location: string
+  notes: string
+  gameDate: string
 }
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8787').replace(/\/$/, '')
@@ -55,6 +74,38 @@ function getStatusLabel(status: GameStatus): string {
       return 'מבוטל'
     default:
       return status
+  }
+}
+
+function createDefaultGameDateInput(): string {
+  const target = new Date()
+  const delta = (5 - target.getDay() + 7) % 7 || 7
+  target.setDate(target.getDate() + delta)
+  target.setHours(16, 0, 0, 0)
+  return toLocalDateTimeInput(target.toISOString())
+}
+
+function toLocalDateTimeInput(isoString: string): string {
+  const date = new Date(isoString)
+  const localValue = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+  return localValue.toISOString().slice(0, 16)
+}
+
+function createEmptyGameForm(): GameFormState {
+  return {
+    title: 'משחק 3x3',
+    location: '',
+    notes: '',
+    gameDate: createDefaultGameDateInput(),
+  }
+}
+
+function gameToForm(game: Game): GameFormState {
+  return {
+    title: game.title,
+    location: game.location,
+    notes: game.notes,
+    gameDate: toLocalDateTimeInput(game.gameDate),
   }
 }
 
@@ -94,10 +145,12 @@ function App() {
   const [apiConfig, setApiConfig] = useState<ApiConfig | null>(null)
   const [installPrompt, setInstallPrompt] = useState<any>(null)
   const [isBusy, setIsBusy] = useState(false)
-  const [error, setError] = useState<string>('')
-  const [success, setSuccess] = useState<string>('')
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
   const [nameInput, setNameInput] = useState('')
   const [emailInput, setEmailInput] = useState('')
+  const [gameForm, setGameForm] = useState<GameFormState>(() => createEmptyGameForm())
+  const [isEditingGame, setIsEditingGame] = useState(false)
 
   const registeredUserId = useMemo(() => {
     const raw = localStorage.getItem(USER_ID_KEY)
@@ -105,7 +158,6 @@ function App() {
   }, [])
 
   useEffect(() => {
-    // Architecture note: UI state lives locally, server enforces all game rules.
     const onBeforeInstallPrompt = (event: Event) => {
       event.preventDefault()
       setInstallPrompt(event)
@@ -136,12 +188,23 @@ function App() {
     }
 
     bootstrap()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [registeredUserId])
+
+  useEffect(() => {
+    if (!game) {
+      setIsEditingGame(false)
+      setGameForm(createEmptyGameForm())
+      return
+    }
+
+    if (isEditingGame) {
+      setGameForm(gameToForm(game))
+    }
+  }, [game, isEditingGame])
 
   async function refreshGame(userId?: number) {
     const query = userId ? `?userId=${userId}` : ''
-    const response = await apiRequest<{ game: Game }>(`/api/games/current${query}`)
+    const response = await apiRequest<{ game: Game | null }>(`/api/games/current${query}`)
     setGame(response.game)
   }
 
@@ -158,7 +221,7 @@ function App() {
       setUser(response.user)
       localStorage.setItem(USER_ID_KEY, String(response.user.id))
       await refreshGame(response.user.id)
-      setSuccess('ההרשמה הצליחה. ניתן להצטרף למשחק.')
+      setSuccess('ההרשמה הצליחה. כעת ניתן ליצור משחק או להירשם למשחק קיים.')
     } catch (requestError: unknown) {
       const errorMessage = requestError instanceof Error ? requestError.message : 'ההרשמה נכשלה.'
       setError(errorMessage)
@@ -168,7 +231,7 @@ function App() {
   }
 
   async function joinGame() {
-    if (!user) return
+    if (!user || !game) return
     setError('')
     setSuccess('')
     setIsBusy(true)
@@ -188,7 +251,7 @@ function App() {
   }
 
   async function leaveGame() {
-    if (!user) return
+    if (!user || !game) return
     setError('')
     setSuccess('')
     setIsBusy(true)
@@ -201,6 +264,71 @@ function App() {
       setSuccess('הוסרת מהרישום למשחק.')
     } catch (requestError: unknown) {
       const errorMessage = requestError instanceof Error ? requestError.message : 'לא ניתן להסיר כרגע.'
+      setError(errorMessage)
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
+  async function submitGameForm(event: FormEvent) {
+    event.preventDefault()
+    if (!user) return
+
+    setError('')
+    setSuccess('')
+    setIsBusy(true)
+
+    try {
+      const payload = {
+        userId: user.id,
+        title: gameForm.title,
+        location: gameForm.location,
+        notes: gameForm.notes,
+        gameDate: gameForm.gameDate,
+      }
+
+      if (game && user.isAdmin && isEditingGame) {
+        const response = await apiRequest<{ game: Game }>(`/api/games/${game.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify(payload),
+        })
+        setGame(response.game)
+        setIsEditingGame(false)
+        setSuccess('פרטי המשחק עודכנו על ידי אדמין.')
+      } else {
+        const response = await apiRequest<{ game: Game; message?: string }>('/api/games', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        })
+        setGame(response.game)
+        setSuccess(
+          response.message || 'המשחק נוצר. שים לב: גם מי שיצר את המשחק חייב להירשם אליו בנפרד.'
+        )
+      }
+    } catch (requestError: unknown) {
+      const errorMessage = requestError instanceof Error ? requestError.message : 'שמירת המשחק נכשלה.'
+      setError(errorMessage)
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
+  async function deleteGame() {
+    if (!user || !game || !user.isAdmin) return
+    setError('')
+    setSuccess('')
+    setIsBusy(true)
+    try {
+      await apiRequest(`/api/games/${game.id}`, {
+        method: 'DELETE',
+        body: JSON.stringify({ userId: user.id }),
+      })
+      setGame(null)
+      setGameForm(createEmptyGameForm())
+      setIsEditingGame(false)
+      setSuccess('המשחק נמחק על ידי אדמין.')
+    } catch (requestError: unknown) {
+      const errorMessage = requestError instanceof Error ? requestError.message : 'מחיקת המשחק נכשלה.'
       setError(errorMessage)
     } finally {
       setIsBusy(false)
@@ -259,14 +387,14 @@ function App() {
   }
 
   const isUserInGame = Boolean(user && game?.players.some((item) => item.userId === user.id))
+  const canShowCreateForm = Boolean(user && !game)
+  const canShowAdminEditor = Boolean(user?.isAdmin && game)
 
   return (
     <main className="app-shell">
       <section className="hero">
-        <h1>ניהול משחק 3x3 ליום שישי</h1>
-        <p>
-          קבוצה סגורה בלבד: רישום חד-פעמי, רשימת המתנה אוטומטית, ותזכורות Push לפני משחק.
-        </p>
+        <h1>ניהול משחק 3x3</h1>
+        <p>כל משתתף יכול ליצור משחק ידנית. רק אדמין יכול לערוך או למחוק משחק קיים.</p>
       </section>
 
       <section className="grid">
@@ -299,16 +427,23 @@ function App() {
           <article className="card">
             <h2>שלום, {user.name}</h2>
             <p className="muted">{user.email}</p>
+            {user.isAdmin && <p className="muted">הרשאה: ADMIN</p>}
             <div className="row" style={{ marginTop: 12 }}>
-              {!isUserInGame ? (
-                <button disabled={isBusy} className="cta cta-primary" onClick={joinGame}>
-                  הצטרפות למשחק
+              {game && !isUserInGame ? (
+                <button
+                  disabled={isBusy || game.isRegistrationClosed}
+                  className="cta cta-primary"
+                  onClick={joinGame}
+                >
+                  {game.isRegistrationClosed ? 'ההרשמה נסגרה' : 'הצטרפות למשחק'}
                 </button>
-              ) : (
+              ) : null}
+
+              {game && isUserInGame ? (
                 <button disabled={isBusy} className="cta cta-danger" onClick={leaveGame}>
                   ביטול הרשמה
                 </button>
-              )}
+              ) : null}
 
               <button disabled={isBusy || !installPrompt} className="cta cta-soft" onClick={promptInstall}>
                 התקנת האפליקציה
@@ -325,27 +460,99 @@ function App() {
           </article>
         )}
 
+        {(canShowCreateForm || canShowAdminEditor) && (
+          <article className="card full-width">
+            <h2>{isEditingGame ? 'עריכת משחק (ADMIN)' : 'יצירת משחק חדש'}</h2>
+            <p className="muted">
+              מי שיוצר את המשחק אינו נרשם אוטומטית. כולם, כולל היוצר, חייבים להירשם עד{' '}
+              {apiConfig?.registrationLeadHours || 24} שעות לפני המשחק.
+            </p>
+            {canShowAdminEditor && !isEditingGame ? (
+              <div className="row" style={{ marginTop: 12 }}>
+                <button className="cta cta-primary" disabled={isBusy} onClick={() => setIsEditingGame(true)}>
+                  עריכת משחק
+                </button>
+                <button className="cta cta-danger" disabled={isBusy} onClick={deleteGame}>
+                  מחיקת משחק
+                </button>
+              </div>
+            ) : (
+              <form className="input-grid" onSubmit={submitGameForm}>
+                <input
+                  required
+                  placeholder="כותרת המשחק"
+                  value={gameForm.title}
+                  onChange={(event) => setGameForm((current) => ({ ...current, title: event.target.value }))}
+                />
+                <input
+                  placeholder="מיקום"
+                  value={gameForm.location}
+                  onChange={(event) => setGameForm((current) => ({ ...current, location: event.target.value }))}
+                />
+                <input
+                  required
+                  type="datetime-local"
+                  value={gameForm.gameDate}
+                  onChange={(event) => setGameForm((current) => ({ ...current, gameDate: event.target.value }))}
+                />
+                <textarea
+                  placeholder="הערות"
+                  value={gameForm.notes}
+                  onChange={(event) => setGameForm((current) => ({ ...current, notes: event.target.value }))}
+                  style={{ minHeight: 100 }}
+                />
+                <div className="row">
+                  <button disabled={isBusy} className="cta cta-primary" type="submit">
+                    {isEditingGame ? 'שמירת שינויים' : 'יצירת משחק'}
+                  </button>
+                  {isEditingGame && (
+                    <button
+                      disabled={isBusy}
+                      className="cta cta-soft"
+                      type="button"
+                      onClick={() => setIsEditingGame(false)}
+                    >
+                      ביטול
+                    </button>
+                  )}
+                </div>
+              </form>
+            )}
+          </article>
+        )}
+
         <article className="card full-width">
-          <h2>משחק קרוב</h2>
+          <h2>המשחק הקרוב</h2>
           {game ? (
             <>
               <div className="row">
                 <span className={`status-badge status-${game.status}`}>{getStatusLabel(game.status)}</span>
+                <span className="muted">{game.title}</span>
                 <span className="muted">תאריך: {new Date(game.gameDate).toLocaleString('he-IL')}</span>
                 <span className="muted">רשומים: {game.playersCount}/12</span>
               </div>
+              {game.location && <p>מיקום: <strong>{game.location}</strong></p>}
+              {game.notes && <p className="muted">הערות: {game.notes}</p>}
+              {game.createdByName && <p className="muted">נוצר על ידי: {game.createdByName}</p>}
+              <p className="muted">
+                דדליין הרשמה: {new Date(game.registrationDeadline).toLocaleString('he-IL')}.
+                תזכורת Push תישלח למי שהתקין את האפליקציה בדיוק בזמן הזה.
+              </p>
               {user && game.viewerPosition && (
                 <p>
                   המיקום שלך: <strong>#{game.viewerPosition}</strong> | סטטוס אישי:{' '}
                   <strong>{game.viewerRole === 'PLAYING' ? 'משחק' : 'המתנה'}</strong>
                 </p>
               )}
+              {game.isRegistrationClosed && (
+                <p className="message message-error">ההרשמה נסגרה למשחק הזה כי נותרו פחות מ-24 שעות עד הפתיחה.</p>
+              )}
               <p className="muted">
-                כללי ליגה: 6+ מאשר משחק, 10-11 ברשימת המתנה, 12 נועלים את המשחק וכל השחקנים חייבים להגיע.
+                כללי ליגה: 6+ מאשר משחק, 10-11 ברשימת המתנה, 12 נועלים את המשחק.
               </p>
             </>
           ) : (
-            <p className="muted">טוען נתוני משחק...</p>
+            <p className="muted">אין כרגע משחק מתוכנן. כל משתתף רשום יכול ליצור משחק חדש.</p>
           )}
         </article>
 

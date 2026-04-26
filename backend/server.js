@@ -10,12 +10,22 @@ dotenv.config();
 
 const PORT = Number(process.env.PORT || 8787);
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
+const FRONTEND_ORIGINS = FRONTEND_ORIGIN.split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 const DB_DIR = path.join(__dirname, 'data');
 const DB_FILE = path.join(DB_DIR, 'yomshishi.sqlite');
+const FRONTEND_DIST_DIR = path.join(__dirname, '..', 'frontend', 'dist');
 const APPROVED_EMAILS = (process.env.APPROVED_EMAILS || '')
   .split(',')
   .map((item) => item.trim().toLowerCase())
   .filter(Boolean);
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
+  .split(',')
+  .map((item) => item.trim().toLowerCase())
+  .filter(Boolean);
+const REGISTRATION_LEAD_HOURS = Number(process.env.REGISTRATION_LEAD_HOURS || 24);
+const REGISTRATION_LEAD_MS = REGISTRATION_LEAD_HOURS * 60 * 60 * 1000;
 
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
@@ -27,6 +37,8 @@ if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
 }
 
 let db;
+let reminderInterval = null;
+let reminderDispatchInFlight = false;
 
 function all(sql, params = []) {
   const stmt = db.prepare(sql);
@@ -62,25 +74,6 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function nextFridayIso() {
-  const current = new Date();
-  const day = current.getDay();
-  const targetDay = 5;
-  const delta = (targetDay - day + 7) % 7 || 7;
-  const target = new Date(current);
-  target.setDate(current.getDate() + delta);
-  target.setHours(21, 0, 0, 0);
-  return target.toISOString();
-}
-
-function gameStatusByCount(totalPlayers, cancelled) {
-  if (cancelled) return 'CANCELLED';
-  if (totalPlayers === 12) return 'LOCKED';
-  if (totalPlayers >= 10) return 'WAITING';
-  if (totalPlayers >= 6) return 'CONFIRMED';
-  return 'OPEN';
-}
-
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase();
 }
@@ -99,28 +92,122 @@ function ensureApproved(email) {
   return { ok: true };
 }
 
-function ensureCurrentGame() {
-  const existing = get(
-    `SELECT id, game_date, status, is_cancelled
-     FROM games
-     WHERE is_cancelled = 0
-     ORDER BY game_date ASC
-     LIMIT 1`
-  );
+function isAdminEmail(email) {
+  return ADMIN_EMAILS.includes(normalizeEmail(email));
+}
 
-  if (existing) {
-    return Number(existing.id);
+function parseDate(value) {
+  const date = new Date(String(value || ''));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function registrationDeadlineIso(gameDate) {
+  return new Date(new Date(gameDate).getTime() - REGISTRATION_LEAD_MS).toISOString();
+}
+
+function isRegistrationOpen(gameDate) {
+  return Date.now() < new Date(registrationDeadlineIso(gameDate)).getTime();
+}
+
+function formatDateTime(dateValue) {
+  return new Date(dateValue).toLocaleString('he-IL', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function gameStatusByCount(totalPlayers, cancelled) {
+  if (cancelled) return 'CANCELLED';
+  if (totalPlayers === 12) return 'LOCKED';
+  if (totalPlayers >= 10) return 'WAITING';
+  if (totalPlayers >= 6) return 'CONFIRMED';
+  return 'OPEN';
+}
+
+function ensureColumn(tableName, columnName, definition) {
+  const columns = all(`PRAGMA table_info(${tableName})`);
+  if (columns.some((column) => column.name === columnName)) {
+    return;
   }
 
-  run(
-    `INSERT INTO games (game_date, status, is_cancelled, created_at, updated_at)
-     VALUES (?, 'OPEN', 0, ?, ?)`,
-    [nextFridayIso(), nowIso(), nowIso()]
+  run(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+}
+
+function getUserRow(userId) {
+  return get('SELECT id, name, email FROM users WHERE id = ?', [userId]);
+}
+
+function serializeUser(user) {
+  return {
+    id: Number(user.id),
+    name: user.name,
+    email: user.email,
+    isAdmin: isAdminEmail(user.email),
+  };
+}
+
+function getRequester(userId) {
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return { error: { status: 400, message: 'מזהה משתמש לא תקין.' } };
+  }
+
+  const user = getUserRow(userId);
+  if (!user) {
+    return { error: { status: 404, message: 'משתמש לא נמצא.' } };
+  }
+
+  return { user };
+}
+
+function ensureAdmin(userId) {
+  const requester = getRequester(userId);
+  if (requester.error) {
+    return requester;
+  }
+
+  if (!isAdminEmail(requester.user.email)) {
+    return { error: { status: 403, message: 'רק אדמין יכול לבצע פעולה זו.' } };
+  }
+
+  return requester;
+}
+
+function getUpcomingGameId() {
+  const row = get(
+    `SELECT id
+     FROM games
+     WHERE is_cancelled = 0 AND game_date >= ?
+     ORDER BY game_date ASC
+     LIMIT 1`,
+    [nowIso()]
   );
 
-  const row = get('SELECT last_insert_rowid() AS id');
-  persistDb();
-  return Number(row.id);
+  return row ? Number(row.id) : null;
+}
+
+function getGameRow(gameId) {
+  return get(
+    `SELECT g.id,
+            g.title,
+            g.location,
+            g.notes,
+            g.game_date,
+            g.status,
+            g.is_cancelled,
+            g.created_by_user_id,
+            g.reminder_due_at,
+            g.reminder_sent_at,
+            g.created_at,
+            g.updated_at,
+            u.name AS created_by_name
+     FROM games g
+     LEFT JOIN users u ON u.id = g.created_by_user_id
+     WHERE g.id = ?`,
+    [gameId]
+  );
 }
 
 function reorderPositions(gameId) {
@@ -138,7 +225,7 @@ function reorderPositions(gameId) {
 }
 
 function recalculateGame(gameId) {
-  const game = get('SELECT is_cancelled FROM games WHERE id = ?', [gameId]);
+  const game = get('SELECT game_date, is_cancelled FROM games WHERE id = ?', [gameId]);
   if (!game) {
     return;
   }
@@ -159,23 +246,23 @@ function recalculateGame(gameId) {
     run('UPDATE registrations SET role = ? WHERE id = ?', [role, item.id]);
   });
 
-  run('UPDATE games SET status = ?, updated_at = ? WHERE id = ?', [
-    gameStatusByCount(totalPlayers, isCancelled),
-    nowIso(),
-    gameId,
-  ]);
+  run(
+    `UPDATE games
+     SET status = ?, reminder_due_at = ?, updated_at = ?
+     WHERE id = ?`,
+    [
+      gameStatusByCount(totalPlayers, isCancelled),
+      registrationDeadlineIso(game.game_date),
+      nowIso(),
+      gameId,
+    ]
+  );
 
   persistDb();
 }
 
 function serializeGame(gameId, viewerUserId = null) {
-  const game = get(
-    `SELECT id, game_date, status, is_cancelled, created_at, updated_at
-     FROM games
-     WHERE id = ?`,
-    [gameId]
-  );
-
+  const game = getGameRow(gameId);
   if (!game) {
     return null;
   }
@@ -203,16 +290,15 @@ function serializeGame(gameId, viewerUserId = null) {
     joinedAt: row.joined_at,
   }));
 
-  const viewerPosition = viewerUserId
-    ? players.find((player) => player.userId === Number(viewerUserId))?.position || null
-    : null;
-
-  const viewerRole = viewerUserId
-    ? players.find((player) => player.userId === Number(viewerUserId))?.role || null
+  const viewerPlayer = viewerUserId
+    ? players.find((player) => player.userId === Number(viewerUserId)) || null
     : null;
 
   return {
     id: Number(game.id),
+    title: game.title || 'משחק 3x3',
+    location: game.location || '',
+    notes: game.notes || '',
     gameDate: game.game_date,
     status: game.status,
     isCancelled: Number(game.is_cancelled) === 1,
@@ -220,11 +306,134 @@ function serializeGame(gameId, viewerUserId = null) {
     maxPlayers: 12,
     playersCount: players.length,
     players,
-    viewerPosition,
-    viewerRole,
+    viewerPosition: viewerPlayer?.position || null,
+    viewerRole: viewerPlayer?.role || null,
+    createdByUserId: game.created_by_user_id ? Number(game.created_by_user_id) : null,
+    createdByName: game.created_by_name || '',
+    registrationDeadline: registrationDeadlineIso(game.game_date),
+    canRegister: isRegistrationOpen(game.game_date),
+    isRegistrationClosed: !isRegistrationOpen(game.game_date),
+    reminderDueAt: game.reminder_due_at || registrationDeadlineIso(game.game_date),
+    reminderSentAt: game.reminder_sent_at || null,
     createdAt: game.created_at,
     updatedAt: game.updated_at,
   };
+}
+
+function validateGameInput(payload) {
+  const title = String(payload?.title || '').trim() || 'משחק 3x3';
+  const location = String(payload?.location || '').trim();
+  const notes = String(payload?.notes || '').trim();
+  const gameDate = parseDate(payload?.gameDate);
+
+  if (!gameDate) {
+    return { error: 'יש להזין תאריך ושעה תקינים למשחק.' };
+  }
+
+  if (gameDate.getTime() - Date.now() <= REGISTRATION_LEAD_MS) {
+    return {
+      error: `יש ליצור משחק לפחות ${REGISTRATION_LEAD_HOURS} שעות לפני מועד המשחק כדי לאפשר הרשמה בזמן.`,
+    };
+  }
+
+  return {
+    value: {
+      title,
+      location,
+      notes,
+      gameDate: gameDate.toISOString(),
+    },
+  };
+}
+
+async function sendPushNotification(subscriptionPayload, payload) {
+  await webPush.sendNotification(subscriptionPayload, JSON.stringify(payload));
+}
+
+async function dispatchDueReminders(trigger) {
+  if (reminderDispatchInFlight) {
+    return { processedGames: 0, sent: 0, failed: 0, skipped: 'dispatch-in-flight' };
+  }
+
+  if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
+    return { processedGames: 0, sent: 0, failed: 0, skipped: 'vapid-not-configured' };
+  }
+
+  reminderDispatchInFlight = true;
+
+  try {
+    const dueGames = all(
+      `SELECT id
+       FROM games
+       WHERE is_cancelled = 0
+         AND reminder_sent_at IS NULL
+         AND reminder_due_at IS NOT NULL
+         AND reminder_due_at <= ?
+         AND game_date > ?
+       ORDER BY game_date ASC`,
+      [nowIso(), nowIso()]
+    );
+
+    let processedGames = 0;
+    let sent = 0;
+    let failed = 0;
+
+    for (const dueGame of dueGames) {
+      const game = serializeGame(Number(dueGame.id));
+      if (!game) {
+        continue;
+      }
+
+      const subscriptions = all('SELECT id, payload FROM push_subscriptions ORDER BY id ASC');
+
+      for (const subscription of subscriptions) {
+        try {
+          await sendPushNotification(JSON.parse(subscription.payload), {
+            title: `נפתחה הרשמה: ${game.title}`,
+            message: `${formatDateTime(game.gameDate)} ב${game.location || 'מיקום שייקבע'}. יש להירשם עד עכשיו.`,
+            gameId: game.id,
+            gameDate: game.gameDate,
+          });
+          sent += 1;
+        } catch (_error) {
+          failed += 1;
+        }
+      }
+
+      const updatedAt = nowIso();
+      run('UPDATE games SET reminder_sent_at = ?, updated_at = ? WHERE id = ?', [
+        updatedAt,
+        updatedAt,
+        game.id,
+      ]);
+      processedGames += 1;
+    }
+
+    if (processedGames) {
+      persistDb();
+      console.log(`[reminders:${trigger}] processed=${processedGames} sent=${sent} failed=${failed}`);
+    }
+
+    return { processedGames, sent, failed };
+  } finally {
+    reminderDispatchInFlight = false;
+  }
+}
+
+function startReminderScheduler() {
+  if (reminderInterval) {
+    clearInterval(reminderInterval);
+  }
+
+  reminderInterval = setInterval(() => {
+    dispatchDueReminders('scheduler').catch((error) => {
+      console.error('Reminder dispatch failed:', error);
+    });
+  }, 5 * 60 * 1000);
+
+  dispatchDueReminders('startup').catch((error) => {
+    console.error('Initial reminder dispatch failed:', error);
+  });
 }
 
 async function bootstrapDatabase() {
@@ -256,9 +465,15 @@ async function bootstrapDatabase() {
 
     CREATE TABLE IF NOT EXISTS games (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL DEFAULT 'משחק 3x3',
+      location TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
       game_date TEXT NOT NULL,
       status TEXT NOT NULL,
       is_cancelled INTEGER NOT NULL DEFAULT 0,
+      created_by_user_id INTEGER,
+      reminder_due_at TEXT,
+      reminder_sent_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -288,7 +503,30 @@ async function bootstrapDatabase() {
     );
   `);
 
-  ensureCurrentGame();
+  ensureColumn('games', 'title', "TEXT NOT NULL DEFAULT 'משחק 3x3'");
+  ensureColumn('games', 'location', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn('games', 'notes', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn('games', 'created_by_user_id', 'INTEGER');
+  ensureColumn('games', 'reminder_due_at', 'TEXT');
+  ensureColumn('games', 'reminder_sent_at', 'TEXT');
+
+  run("UPDATE games SET title = COALESCE(NULLIF(title, ''), 'משחק 3x3')");
+  run("UPDATE games SET location = COALESCE(location, '')");
+  run("UPDATE games SET notes = COALESCE(notes, '')");
+
+  const games = all('SELECT id, game_date FROM games');
+  games.forEach((game) => {
+    const updatedAt = nowIso();
+    run(
+      `UPDATE games
+       SET reminder_due_at = COALESCE(reminder_due_at, ?),
+           updated_at = COALESCE(updated_at, ?)
+       WHERE id = ?`,
+      [registrationDeadlineIso(game.game_date), updatedAt, game.id]
+    );
+    recalculateGame(Number(game.id));
+  });
+
   persistDb();
 }
 
@@ -299,8 +537,15 @@ async function startServer() {
 
   app.use(
     cors({
-      origin: FRONTEND_ORIGIN,
-      methods: ['GET', 'POST', 'OPTIONS'],
+      origin(origin, callback) {
+        if (!origin || FRONTEND_ORIGINS.includes(origin)) {
+          callback(null, true);
+          return;
+        }
+
+        callback(new Error('Origin not allowed by CORS'));
+      },
+      methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type'],
     })
   );
@@ -314,6 +559,7 @@ async function startServer() {
     res.json({
       vapidPublicKey: VAPID_PUBLIC_KEY,
       closedGroupEnabled: true,
+      registrationLeadHours: REGISTRATION_LEAD_HOURS,
     });
   });
 
@@ -340,8 +586,9 @@ async function startServer() {
         ]);
         persistDb();
       }
-      const refreshed = get('SELECT id, name, email FROM users WHERE id = ?', [existingUser.id]);
-      return res.json({ user: { id: Number(refreshed.id), name: refreshed.name, email: refreshed.email } });
+
+      const refreshed = getUserRow(Number(existingUser.id));
+      return res.json({ user: serializeUser(refreshed) });
     }
 
     run('INSERT INTO users (name, email, created_at, updated_at) VALUES (?, ?, ?, ?)', [
@@ -353,49 +600,181 @@ async function startServer() {
     const row = get('SELECT last_insert_rowid() AS id');
     persistDb();
 
-    const user = get('SELECT id, name, email FROM users WHERE id = ?', [row.id]);
-    return res.status(201).json({ user: { id: Number(user.id), name: user.name, email: user.email } });
+    const user = getUserRow(Number(row.id));
+    return res.status(201).json({ user: serializeUser(user) });
   });
 
   app.get('/api/users/:userId', (req, res) => {
     const userId = Number(req.params.userId);
-    if (!Number.isInteger(userId) || userId <= 0) {
-      return res.status(400).json({ message: 'מזהה משתמש לא תקין.' });
+    const requester = getRequester(userId);
+    if (requester.error) {
+      return res.status(requester.error.status).json({ message: requester.error.message });
     }
-    const user = get('SELECT id, name, email FROM users WHERE id = ?', [userId]);
-    if (!user) {
-      return res.status(404).json({ message: 'משתמש לא נמצא.' });
-    }
-    return res.json({ user: { id: Number(user.id), name: user.name, email: user.email } });
+
+    return res.json({ user: serializeUser(requester.user) });
   });
 
   app.get('/api/games/current', (req, res) => {
     const userId = req.query.userId ? Number(req.query.userId) : null;
-    const gameId = ensureCurrentGame();
+    const gameId = getUpcomingGameId();
+
+    if (!gameId) {
+      return res.json({ game: null });
+    }
+
     recalculateGame(gameId);
     return res.json({ game: serializeGame(gameId, userId) });
   });
 
+  app.post('/api/games', (req, res) => {
+    const userId = Number(req.body?.userId);
+    const requester = getRequester(userId);
+    if (requester.error) {
+      return res.status(requester.error.status).json({ message: requester.error.message });
+    }
+
+    if (getUpcomingGameId()) {
+      return res.status(409).json({
+        message: 'כבר קיים משחק פעיל במערכת. רק אדמין יכול לערוך או למחוק אותו.',
+      });
+    }
+
+    const validated = validateGameInput(req.body);
+    if (validated.error) {
+      return res.status(400).json({ message: validated.error });
+    }
+
+    const createdAt = nowIso();
+    run(
+      `INSERT INTO games (
+        title,
+        location,
+        notes,
+        game_date,
+        status,
+        is_cancelled,
+        created_by_user_id,
+        reminder_due_at,
+        reminder_sent_at,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, 'OPEN', 0, ?, ?, NULL, ?, ?)`,
+      [
+        validated.value.title,
+        validated.value.location,
+        validated.value.notes,
+        validated.value.gameDate,
+        requester.user.id,
+        registrationDeadlineIso(validated.value.gameDate),
+        createdAt,
+        createdAt,
+      ]
+    );
+
+    const row = get('SELECT last_insert_rowid() AS id');
+    const gameId = Number(row.id);
+    recalculateGame(gameId);
+    return res.status(201).json({
+      game: serializeGame(gameId, requester.user.id),
+      message: 'המשחק נוצר. שים לב: גם מי שיצר את המשחק חייב להירשם אליו בנפרד.',
+    });
+  });
+
+  app.patch('/api/games/:gameId', (req, res) => {
+    const userId = Number(req.body?.userId);
+    const requester = ensureAdmin(userId);
+    if (requester.error) {
+      return res.status(requester.error.status).json({ message: requester.error.message });
+    }
+
+    const gameId = Number(req.params.gameId);
+    if (!Number.isInteger(gameId) || gameId <= 0) {
+      return res.status(400).json({ message: 'מזהה משחק לא תקין.' });
+    }
+
+    const existingGame = getGameRow(gameId);
+    if (!existingGame) {
+      return res.status(404).json({ message: 'משחק לא נמצא.' });
+    }
+
+    const validated = validateGameInput(req.body);
+    if (validated.error) {
+      return res.status(400).json({ message: validated.error });
+    }
+
+    run(
+      `UPDATE games
+       SET title = ?,
+           location = ?,
+           notes = ?,
+           game_date = ?,
+           reminder_due_at = ?,
+           reminder_sent_at = NULL,
+           updated_at = ?
+       WHERE id = ?`,
+      [
+        validated.value.title,
+        validated.value.location,
+        validated.value.notes,
+        validated.value.gameDate,
+        registrationDeadlineIso(validated.value.gameDate),
+        nowIso(),
+        gameId,
+      ]
+    );
+
+    recalculateGame(gameId);
+    return res.json({ game: serializeGame(gameId, requester.user.id) });
+  });
+
+  app.delete('/api/games/:gameId', (req, res) => {
+    const userId = Number(req.body?.userId);
+    const requester = ensureAdmin(userId);
+    if (requester.error) {
+      return res.status(requester.error.status).json({ message: requester.error.message });
+    }
+
+    const gameId = Number(req.params.gameId);
+    if (!Number.isInteger(gameId) || gameId <= 0) {
+      return res.status(400).json({ message: 'מזהה משחק לא תקין.' });
+    }
+
+    const existingGame = getGameRow(gameId);
+    if (!existingGame) {
+      return res.status(404).json({ message: 'משחק לא נמצא.' });
+    }
+
+    run('DELETE FROM games WHERE id = ?', [gameId]);
+    persistDb();
+    return res.json({ ok: true });
+  });
+
   app.post('/api/games/current/join', (req, res) => {
     const userId = Number(req.body?.userId);
-    if (!Number.isInteger(userId) || userId <= 0) {
-      return res.status(400).json({ message: 'מזהה משתמש לא תקין.' });
+    const requester = getRequester(userId);
+    if (requester.error) {
+      return res.status(requester.error.status).json({ message: requester.error.message });
     }
 
-    const user = get('SELECT id FROM users WHERE id = ?', [userId]);
-    if (!user) {
-      return res.status(404).json({ message: 'משתמש לא נמצא.' });
+    const gameId = getUpcomingGameId();
+    if (!gameId) {
+      return res.status(404).json({ message: 'אין כרגע משחק פתוח להרשמה.' });
     }
 
-    const gameId = ensureCurrentGame();
-    const currentGame = get('SELECT id, is_cancelled FROM games WHERE id = ?', [gameId]);
+    const currentGame = getGameRow(gameId);
     if (Number(currentGame.is_cancelled) === 1) {
       return res.status(409).json({ message: 'המשחק בוטל ולא ניתן להצטרף.' });
     }
 
+    if (!isRegistrationOpen(currentGame.game_date)) {
+      return res.status(409).json({
+        message: `ההרשמה נסגרה ${REGISTRATION_LEAD_HOURS} שעות לפני מועד המשחק.`,
+      });
+    }
+
     const existing = get(
       'SELECT id FROM registrations WHERE game_id = ? AND user_id = ?',
-      [gameId, userId]
+      [gameId, requester.user.id]
     );
     if (existing) {
       return res.status(409).json({ message: 'כבר נרשמת למשחק.' });
@@ -410,23 +789,28 @@ async function startServer() {
     run(
       `INSERT INTO registrations (game_id, user_id, position, role, joined_at)
        VALUES (?, ?, ?, 'WAITING', ?)`,
-      [gameId, userId, currentCount + 1, nowIso()]
+      [gameId, requester.user.id, currentCount + 1, nowIso()]
     );
 
     recalculateGame(gameId);
-    return res.status(201).json({ game: serializeGame(gameId, userId) });
+    return res.status(201).json({ game: serializeGame(gameId, requester.user.id) });
   });
 
   app.post('/api/games/current/leave', (req, res) => {
     const userId = Number(req.body?.userId);
-    if (!Number.isInteger(userId) || userId <= 0) {
-      return res.status(400).json({ message: 'מזהה משתמש לא תקין.' });
+    const requester = getRequester(userId);
+    if (requester.error) {
+      return res.status(requester.error.status).json({ message: requester.error.message });
     }
 
-    const gameId = ensureCurrentGame();
+    const gameId = getUpcomingGameId();
+    if (!gameId) {
+      return res.status(404).json({ message: 'אין כרגע משחק פעיל להסרה.' });
+    }
+
     const existing = get(
       'SELECT id FROM registrations WHERE game_id = ? AND user_id = ?',
-      [gameId, userId]
+      [gameId, requester.user.id]
     );
     if (!existing) {
       return res.status(409).json({ message: 'לא נמצאה הרשמה פעילה למשתמש הזה.' });
@@ -435,23 +819,19 @@ async function startServer() {
     run('DELETE FROM registrations WHERE id = ?', [existing.id]);
     reorderPositions(gameId);
     recalculateGame(gameId);
-    return res.json({ game: serializeGame(gameId, userId) });
+    return res.json({ game: serializeGame(gameId, requester.user.id) });
   });
 
   app.post('/api/push/subscribe', (req, res) => {
     const userId = Number(req.body?.userId);
     const subscription = req.body?.subscription;
 
-    if (!Number.isInteger(userId) || userId <= 0) {
-      return res.status(400).json({ message: 'מזהה משתמש לא תקין.' });
+    const requester = getRequester(userId);
+    if (requester.error) {
+      return res.status(requester.error.status).json({ message: requester.error.message });
     }
     if (!subscription?.endpoint || !subscription?.keys?.p256dh || !subscription?.keys?.auth) {
       return res.status(400).json({ message: 'נתוני subscription לא תקינים.' });
-    }
-
-    const user = get('SELECT id FROM users WHERE id = ?', [userId]);
-    if (!user) {
-      return res.status(404).json({ message: 'משתמש לא נמצא.' });
     }
 
     const existing = get('SELECT id FROM push_subscriptions WHERE endpoint = ?', [subscription.endpoint]);
@@ -461,7 +841,7 @@ async function startServer() {
          SET user_id = ?, p256dh = ?, auth = ?, payload = ?, updated_at = ?
          WHERE id = ?`,
         [
-          userId,
+          requester.user.id,
           subscription.keys.p256dh,
           subscription.keys.auth,
           JSON.stringify(subscription),
@@ -474,7 +854,7 @@ async function startServer() {
         `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, payload, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
-          userId,
+          requester.user.id,
           subscription.endpoint,
           subscription.keys.p256dh,
           subscription.keys.auth,
@@ -489,55 +869,30 @@ async function startServer() {
     return res.status(201).json({ ok: true });
   });
 
-  app.post('/api/games/current/remind', async (req, res) => {
+  app.post('/api/reminders/dispatch', async (req, res) => {
     const providedSecret = String(req.body?.secret || '');
     if (!REMINDER_SECRET || providedSecret !== REMINDER_SECRET) {
-      return res.status(403).json({ message: 'הרשאה חסרה לשליחת תזכורת.' });
-    }
-    if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
-      return res.status(400).json({ message: 'VAPID אינו מוגדר בשרת.' });
+      return res.status(403).json({ message: 'הרשאה חסרה לשליחת תזכורות.' });
     }
 
-    const gameId = ensureCurrentGame();
-    recalculateGame(gameId);
-    const game = serializeGame(gameId);
-    const playingUserIds = game.players
-      .filter((player) => player.role === 'PLAYING')
-      .map((player) => player.userId);
+    const result = await dispatchDueReminders('manual');
+    return res.json(result);
+  });
 
-    if (!playingUserIds.length) {
-      return res.json({ sent: 0, failed: 0 });
+  if (fs.existsSync(FRONTEND_DIST_DIR)) {
+    app.use(express.static(FRONTEND_DIST_DIR));
+
+    app.get(/^(?!\/api).*/, (_req, res) => {
+      res.sendFile(path.join(FRONTEND_DIST_DIR, 'index.html'));
+    });
+  }
+
+  app.use((error, _req, res, next) => {
+    if (error?.message === 'Origin not allowed by CORS') {
+      return res.status(403).json({ message: 'Origin not allowed by CORS' });
     }
 
-    const placeholders = playingUserIds.map(() => '?').join(',');
-    const subs = all(
-      `SELECT id, payload
-       FROM push_subscriptions
-       WHERE user_id IN (${placeholders})`,
-      playingUserIds
-    );
-
-    const title = String(req.body?.title || 'תזכורת למשחק יום שישי');
-    const message = String(
-      req.body?.message || 'המשחק מתקרב. נא לוודא הגעה בזמן.'
-    );
-
-    let sent = 0;
-    let failed = 0;
-
-    for (const sub of subs) {
-      try {
-        await webPush.sendNotification(
-          JSON.parse(sub.payload),
-          JSON.stringify({ title, message, gameDate: game.gameDate })
-        );
-        sent += 1;
-      } catch (_error) {
-        failed += 1;
-      }
-    }
-
-    return res.json({ sent, failed });
+    return next(error);
   });
 
   app.use((_req, res) => {
@@ -547,6 +902,8 @@ async function startServer() {
   app.listen(PORT, () => {
     console.log(`API listening on http://localhost:${PORT}`);
   });
+
+  startReminderScheduler();
 }
 
 startServer().catch((error) => {
