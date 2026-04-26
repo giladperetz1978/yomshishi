@@ -60,4 +60,16 @@ jobs:
             npm ci --omit=dev
             pm2 restart yomshishi-backend || pm2 start server.js --name yomshishi-backend
             pm2 save
-            curl --fail http://127.0.0.1:8787/api/health
+            HEALTH_OK=0
+            for i in $(seq 1 20); do
+              if curl --silent --fail http://127.0.0.1:8787/api/health >/dev/null; then
+                HEALTH_OK=1
+                break
+              fi
+              sleep 2
+            done
+            if [ "$HEALTH_OK" -ne 1 ]; then
+              pm2 status
+              pm2 logs yomshishi-backend --lines 120 --nostream || true
+              exit 1
+            fi
