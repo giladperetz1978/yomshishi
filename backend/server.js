@@ -1157,6 +1157,25 @@ async function startServer() {
     return res.status(201).json({ ok: true });
   });
 
+  app.post('/api/push/unsubscribe', (req, res) => {
+    const userId = Number(req.body?.userId);
+    const endpoint = String(req.body?.endpoint || '').trim();
+
+    const requester = getRequester(userId);
+    if (requester.error) {
+      return res.status(requester.error.status).json({ message: requester.error.message });
+    }
+
+    if (endpoint) {
+      run('DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?', [requester.user.id, endpoint]);
+    } else {
+      run('DELETE FROM push_subscriptions WHERE user_id = ?', [requester.user.id]);
+    }
+
+    persistDb();
+    return res.json({ ok: true });
+  });
+
   app.post('/api/push/test', async (req, res) => {
     const userId = Number(req.body?.userId);
     const requester = getRequester(userId);

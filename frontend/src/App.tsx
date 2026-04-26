@@ -250,6 +250,7 @@ function App() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [googleReady, setGoogleReady] = useState(false)
+  const [pushEnabled, setPushEnabled] = useState(false)
   const [gameForm, setGameForm] = useState<GameFormState>(() => createEmptyGameForm())
   const [isEditingGame, setIsEditingGame] = useState(false)
   const [editingGameId, setEditingGameId] = useState<number | null>(null)
@@ -390,6 +391,25 @@ function App() {
 
     setGoogleReady(true)
   }, [apiConfig?.googleClientId, user])
+
+  useEffect(() => {
+    const syncPushState = async () => {
+      if (!user || !apiConfig?.vapidPublicKey || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+        setPushEnabled(false)
+        return
+      }
+
+      try {
+        const registration = await navigator.serviceWorker.ready
+        const subscription = await registration.pushManager.getSubscription()
+        setPushEnabled(Boolean(subscription))
+      } catch (_error) {
+        setPushEnabled(false)
+      }
+    }
+
+    syncPushState()
+  }, [apiConfig?.vapidPublicKey, user])
 
   async function refreshGame(userId?: number) {
     const query = userId ? `?userId=${userId}` : ''
@@ -662,9 +682,53 @@ function App() {
         }),
       })
 
+      setPushEnabled(true)
       setSuccess('נרשמת בהצלחה לתזכורות Push.')
     } catch (requestError: unknown) {
       const errorMessage = requestError instanceof Error ? requestError.message : 'רישום ל-Push נכשל.'
+      setError(errorMessage)
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
+  async function unsubscribeFromPush() {
+    if (!user) {
+      return
+    }
+
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      setError('המכשיר אינו תומך ב-Push Notifications.')
+      return
+    }
+
+    setError('')
+    setSuccess('')
+    setIsBusy(true)
+
+    try {
+      const registration = await navigator.serviceWorker.ready
+      const subscription = await registration.pushManager.getSubscription()
+
+      if (!subscription) {
+        setPushEnabled(false)
+        setSuccess('לא נמצאה תזכורת פעילה לביטול.')
+        return
+      }
+
+      await apiRequest('/api/push/unsubscribe', {
+        method: 'POST',
+        body: JSON.stringify({
+          userId: user.id,
+          endpoint: subscription.endpoint,
+        }),
+      })
+
+      await subscription.unsubscribe()
+      setPushEnabled(false)
+      setSuccess('תזכורות ה-Push בוטלו במכשיר הזה.')
+    } catch (requestError: unknown) {
+      const errorMessage = requestError instanceof Error ? requestError.message : 'ביטול תזכורת נכשל.'
       setError(errorMessage)
     } finally {
       setIsBusy(false)
@@ -704,50 +768,88 @@ function App() {
     setInstallPrompt(null)
   }
 
+  const spotlightGame = game ?? upcomingGames[0] ?? null
+  const nextGame = upcomingGames.find((item) => item.id !== spotlightGame?.id) ?? null
+  const rosterGames = [spotlightGame, nextGame].filter((item): item is Game => Boolean(item))
   const isUserInGame = Boolean(user && game?.players.some((item) => item.userId === user.id))
   const canShowCreateForm = Boolean((user || hasAdminSession) && upcomingGames.length < maxActiveGames)
   const canShowAdminEditor = Boolean((user?.isAdmin || hasAdminSession) && upcomingGames.length)
   const isGoogleConfigured = Boolean(apiConfig?.googleClientId)
   const isSecureOriginForGoogle =
     window.isSecureContext || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+  const showCreateBlock = canShowCreateForm || canShowAdminEditor
 
   return (
     <main className="app-shell">
-      <section className="hero">
-        <h1>ניהול משחק 3x3</h1>
-        <p>כל משתתף יכול ליצור משחק ידנית. אדמין יכול לערוך או למחוק משחק קיים.</p>
+      <section className="hero hero-sport">
+        <div className="topbar">
+          <div className="admin-corner">
+            {hasAdminSession ? (
+              <button disabled={isBusy} className="auth-chip auth-chip-active" onClick={logoutAdmin}>
+                יציאה מאדמין
+              </button>
+            ) : !user ? (
+              <button
+                type="button"
+                className={`auth-chip ${authTab === 'admin' ? 'auth-chip-active' : ''}`}
+                onClick={() => setAuthTab('admin')}
+              >
+                ADMIN
+              </button>
+            ) : null}
+          </div>
+
+          <div className="brand-block">
+            <p className="hero-kicker">Friday Hoops</p>
+            <h1>ליגת שישי 3x3</h1>
+            <p className="hero-subtitle">אווירת מגרש, הרשמה מהירה, ותמונת מצב ברורה לכל משחק.</p>
+          </div>
+        </div>
+
+        {!user && !hasAdminSession && (
+          <div className="hero-strip">
+            <div>
+              <strong>הרשמה חד פעמית לאפליקציה</strong>
+              <p>נכנסים פעם אחת עם Google, משלימים שם פרטי ומשפחה, ומאותו רגע רק נרשמים למשחקים.</p>
+            </div>
+          </div>
+        )}
+
+        {user && (
+          <div className="hero-strip hero-strip-compact">
+            <div>
+              <strong>{user.name}</strong>
+              <p>{user.email}</p>
+            </div>
+            <button disabled={isBusy} className="cta cta-ghost" onClick={logout}>
+              התנתקות
+            </button>
+          </div>
+        )}
+
+        {hasAdminSession && (
+          <div className="hero-strip hero-strip-admin">
+            <div>
+              <strong>מצב אדמין פעיל</strong>
+              <p>אפשר לערוך, למחוק ולהקים משחק גם בלי משתמש Google מחובר.</p>
+            </div>
+          </div>
+        )}
       </section>
 
       <section className="grid">
-        {!user && !hasAdminSession && (
-          <article className="card full-width">
-            <div className="auth-tabs" role="tablist" aria-label="כניסה">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={authTab === 'google'}
-                className={`auth-tab ${authTab === 'google' ? 'auth-tab-active' : ''}`}
-                onClick={() => setAuthTab('google')}
-              >
-                כניסה עם Google
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={authTab === 'admin'}
-                className={`auth-tab ${authTab === 'admin' ? 'auth-tab-active' : ''}`}
-                onClick={() => setAuthTab('admin')}
-              >
-                כניסת ADMIN
+        {!user && !hasAdminSession && authTab === 'google' && (
+          <article className="card full-width card-compact">
+            <div className="section-head">
+              <div>
+                <p className="section-kicker">Start Here</p>
+                <h2>כניסה והרשמה ראשונית</h2>
+              </div>
+              <button type="button" className="auth-tab" onClick={() => setAuthTab('admin')}>
+                מעבר ל-ADMIN
               </button>
             </div>
-          </article>
-        )}
-
-        {!user && !hasAdminSession && authTab === 'google' && (
-          <article className="card">
-            <h2>כניסה עם Google</h2>
-            <p className="muted">לאחר הכניסה יש להשלים שם פרטי ושם משפחה כדי להופיע ברשימת הנרשמים בצורה תקינה.</p>
+            <p className="muted">אחרי הכניסה הראשונה נשמור את המשתמש, ונראה כאן רק את השם וההתנתקות.</p>
             <div className="input-grid">
               {!isGoogleConfigured ? (
                 <p className="message message-error">
@@ -768,9 +870,14 @@ function App() {
         )}
 
         {!user && !hasAdminSession && authTab === 'admin' && (
-          <article className="card">
-            <h2>כניסת אדמין</h2>
-            <p className="muted">כניסה זו מיועדת לניהול משחק קיים (עריכה/מחיקה).</p>
+          <article className="card full-width card-compact">
+            <div className="section-head">
+              <div>
+                <p className="section-kicker">Admin Bench</p>
+                <h2>כניסת אדמין</h2>
+              </div>
+            </div>
+            <p className="muted">המסך הזה מיועד למכשיר הניהול. במצב אדמין כניסת Google מוסתרת.</p>
             <form className="input-grid" onSubmit={loginAdmin}>
               <input
                 required
@@ -792,85 +899,15 @@ function App() {
           </article>
         )}
 
-        {hasAdminSession && (
-          <article className="card">
-            <h2>מצב אדמין פעיל</h2>
-            <p className="muted">ניתן לערוך ולמחוק משחק פעיל גם ללא הרשאת אדמין באימייל.</p>
-            <button disabled={isBusy} className="cta cta-soft" onClick={logoutAdmin}>
-              יציאה ממצב אדמין
-            </button>
-          </article>
-        )}
-
-        {user && (
-          <article className="card">
-            <h2>שלום, {user.name}</h2>
-            <p className="muted">{user.email}</p>
-            {user.isAdmin && <p className="muted">הרשאה: ADMIN (אימייל)</p>}
-            <div className="row" style={{ marginTop: 12 }}>
-              {game && !isUserInGame ? (
-                <button
-                  disabled={isBusy || game.isRegistrationClosed || needsProfileCompletion}
-                  className="cta cta-primary"
-                  onClick={joinGame}
-                >
-                  {game.isRegistrationClosed ? 'ההרשמה נסגרה' : 'הצטרפות למשחק'}
-                </button>
-              ) : null}
-
-              {game && isUserInGame ? (
-                <button disabled={isBusy} className="cta cta-danger" onClick={leaveGame}>
-                  ביטול הרשמה
-                </button>
-              ) : null}
-
-              {installPrompt && (
-                <button disabled={isBusy} className="cta cta-soft" onClick={promptInstall}>
-                  התקנת האפליקציה
-                </button>
-              )}
-
-              <button
-                disabled={isBusy || !apiConfig?.vapidPublicKey}
-                className="cta cta-soft"
-                onClick={subscribeForPush}
-              >
-                הפעלת תזכורות Push
-              </button>
-
-              <button
-                disabled={isBusy || !apiConfig?.vapidPublicKey}
-                className="cta cta-soft"
-                onClick={sendTestPush}
-              >
-                בדיקת התראה לטלפון
-              </button>
-
-              <button disabled={isBusy} className="cta cta-soft" onClick={logout}>
-                התנתקות
-              </button>
-            </div>
-            {!installPrompt && isIos && !isStandalone && (
-              <p className="message message-ok" style={{ marginTop: 10 }}>
-                iPhone/iPad: להתקנה לחץ על Share בדפדפן ואז Add to Home Screen.
-              </p>
-            )}
-            {!installPrompt && !isIos && (
-              <p className="muted" style={{ marginTop: 10 }}>
-                התקנה אוטומטית תופיע בדפדפנים תומכים (בעיקר Android/Chrome).
-              </p>
-            )}
-          </article>
-        )}
-
-        {user && (
+        {user && needsProfileCompletion && (
           <article className="card full-width">
-            <h2>{needsProfileCompletion ? 'השלמת פרטים אישיים' : 'פרטים אישיים'}</h2>
-            <p className="muted">
-              {needsProfileCompletion
-                ? 'לפני הרשמה למשחק יש לשמור שם פרטי ושם משפחה תקינים.'
-                : 'אפשר לעדכן שם פרטי ושם משפחה בכל זמן. השם נשמר לפי האימייל לכל דפדפן ומכשיר.'}
-            </p>
+            <div className="section-head">
+              <div>
+                <p className="section-kicker">Roster Card</p>
+                <h2>השלמת פרטים אישיים</h2>
+              </div>
+            </div>
+            <p className="muted">לפני הרשמה למשחק יש לשמור שם פרטי ושם משפחה תקינים.</p>
             <form className="input-grid" onSubmit={saveProfile}>
               <input
                 required
@@ -891,12 +928,151 @@ function App() {
           </article>
         )}
 
-        {(canShowCreateForm || canShowAdminEditor) && (
+        <article className="card full-width game-spotlight">
+          <div className="section-head">
+            <div>
+              <p className="section-kicker">Tip Off</p>
+              <h2>המשחק הקרוב</h2>
+            </div>
+            {spotlightGame && <span className={`status-badge status-${spotlightGame.status}`}>{getStatusLabel(spotlightGame.status)}</span>}
+          </div>
+          {spotlightGame ? (
+            <>
+              <div className="game-headline">
+                <div>
+                  <h3>{spotlightGame.title}</h3>
+                  <p className="game-time">{new Date(spotlightGame.gameDate).toLocaleString('he-IL')}</p>
+                </div>
+                <div className="game-scoreboard">
+                  <span>נרשמו</span>
+                  <strong>{spotlightGame.playersCount}/12</strong>
+                </div>
+              </div>
+
+              <div className="meta-grid">
+                <div className="meta-pill">{spotlightGame.location || 'מיקום יעודכן'}</div>
+                <div className="meta-pill">דדליין: {new Date(spotlightGame.registrationDeadline).toLocaleString('he-IL')}</div>
+                <div className="meta-pill">יוצר: {spotlightGame.createdByName || 'מערכת'}</div>
+              </div>
+
+              {spotlightGame.notes && <p className="muted">{spotlightGame.notes}</p>}
+
+              {user && game && game.viewerPosition && (
+                <p className="message message-ok inline-message">
+                  המיקום שלך: #{game.viewerPosition} | סטטוס: {game.viewerRole === 'PLAYING' ? 'משחק' : 'המתנה'}
+                </p>
+              )}
+
+              {game?.isRegistrationClosed && (
+                <p className="message message-error inline-message">
+                  ההרשמה נסגרה כי נותרו פחות מ-{apiConfig?.registrationLeadHours || 24} שעות לפתיחה.
+                </p>
+              )}
+
+              <div className="row actions-row">
+                {user && game && !isUserInGame ? (
+                <button
+                  disabled={isBusy || game.isRegistrationClosed || needsProfileCompletion}
+                  className="cta cta-primary"
+                  onClick={joinGame}
+                >
+                  {game.isRegistrationClosed ? 'ההרשמה נסגרה' : 'הצטרפות למשחק'}
+                </button>
+              ) : null}
+
+                {game && isUserInGame ? (
+                  <button disabled={isBusy} className="cta cta-danger" onClick={leaveGame}>
+                    ביטול הרשמה
+                  </button>
+                ) : null}
+              </div>
+            </>
+          ) : (
+            <p className="muted">אין כרגע משחק מתוכנן. אם יש הרשאה, אפשר להקים מיד משחק חדש.</p>
+          )}
+        </article>
+
+        {nextGame && (
+          <article className="card full-width next-game-card">
+            <div className="section-head">
+              <div>
+                <p className="section-kicker">On Deck</p>
+                <h2>המשחק הבא</h2>
+              </div>
+              <span className={`status-badge status-${nextGame.status}`}>{getStatusLabel(nextGame.status)}</span>
+            </div>
+            <div className="game-headline compact-headline">
+              <div>
+                <h3>{nextGame.title}</h3>
+                <p className="game-time">{new Date(nextGame.gameDate).toLocaleString('he-IL')}</p>
+              </div>
+              <div className="game-scoreboard game-scoreboard-small">
+                <span>נרשמו</span>
+                <strong>{nextGame.playersCount}/12</strong>
+              </div>
+            </div>
+            <div className="meta-grid">
+              <div className="meta-pill">{nextGame.location || 'מיקום יעודכן'}</div>
+              <div className="meta-pill">דדליין: {new Date(nextGame.registrationDeadline).toLocaleString('he-IL')}</div>
+            </div>
+          </article>
+        )}
+
+        {user && (
+          <article className="card full-width card-compact">
+            <div className="section-head">
+              <div>
+                <p className="section-kicker">Alerts</p>
+                <h2>תזכורות והתקנה</h2>
+              </div>
+            </div>
+            <div className="row actions-row">
+              <button
+                disabled={isBusy || !apiConfig?.vapidPublicKey || pushEnabled}
+                className="cta cta-primary"
+                onClick={subscribeForPush}
+              >
+                הפעלת תזכורת
+              </button>
+              <button
+                disabled={isBusy || !apiConfig?.vapidPublicKey || !pushEnabled}
+                className="cta cta-soft"
+                onClick={unsubscribeFromPush}
+              >
+                ביטול תזכורת
+              </button>
+              {installPrompt && (
+                <button disabled={isBusy} className="cta cta-soft" onClick={promptInstall}>
+                  התקנת האפליקציה
+                </button>
+              )}
+              <button
+                disabled={isBusy || !apiConfig?.vapidPublicKey}
+                className="cta cta-soft"
+                onClick={sendTestPush}
+              >
+                בדיקת התראה
+              </button>
+            </div>
+            {!installPrompt && isIos && !isStandalone && (
+              <p className="message message-ok inline-message">iPhone/iPad: לחץ על Share ואז Add to Home Screen.</p>
+            )}
+            {!installPrompt && !isIos && (
+              <p className="muted">התקנה אוטומטית תופיע בדפדפנים תומכים, בעיקר Android/Chrome.</p>
+            )}
+          </article>
+        )}
+
+        {showCreateBlock && (
           <article className="card full-width">
-            <h2>{isEditingGame ? 'עריכת משחק' : 'יצירת משחק חדש'}</h2>
+            <div className="section-head">
+              <div>
+                <p className="section-kicker">Next Match Setup</p>
+                <h2>{isEditingGame ? 'עריכת משחק' : 'הקמת משחק חדש'}</h2>
+              </div>
+            </div>
             <p className="muted">
-              מי שיוצר את המשחק אינו נרשם אוטומטית. כולם, כולל היוצר, חייבים להירשם עד{' '}
-              {apiConfig?.registrationLeadHours || 24} שעות לפני המשחק.
+              מציגים כאן יצירה כשהמערכת ריקה או כשקיים רק משחק עתידי אחד. גם יוצר המשחק צריך להירשם אליו בנפרד.
             </p>
             {canShowAdminEditor && !isEditingGame ? (
               <div className="row" style={{ marginTop: 12 }}>
@@ -950,7 +1126,11 @@ function App() {
                   style={{ minHeight: 100 }}
                 />
                 <div className="row">
-                  <button disabled={isBusy || needsProfileCompletion} className="cta cta-primary" type="submit">
+                  <button
+                    disabled={isBusy || (needsProfileCompletion && !hasAdminSession)}
+                    className="cta cta-primary"
+                    type="submit"
+                  >
                     {isEditingGame ? 'שמירת שינויים' : 'יצירת משחק'}
                   </button>
                   {isEditingGame && (
@@ -972,91 +1152,48 @@ function App() {
           </article>
         )}
 
-        {user && game && !canShowAdminEditor && (
+        {!showCreateBlock && (
           <article className="card full-width">
-            <h3>יצירת משחק חדש</h3>
-            <p className="muted">כבר קיים משחק פעיל במערכת. כדי לשנות תאריך/שעה יש הרשאת אדמין.</p>
+            <div className="section-head">
+              <div>
+                <p className="section-kicker">Schedule Locked</p>
+                <h2>הקמת משחק חדש</h2>
+              </div>
+            </div>
+            <p className="muted">כבר קיימים שני משחקים עתידיים. אחרי מחיקה או סיום של אחד מהם, אזור ההקמה יחזור להופיע.</p>
           </article>
         )}
 
-        <article className="card full-width">
-          <h2>המשחק הקרוב</h2>
-          {game ? (
-            <>
-              <div className="row">
-                <span className={`status-badge status-${game.status}`}>{getStatusLabel(game.status)}</span>
-                <span className="muted">{game.title}</span>
-                <span className="muted">תאריך: {new Date(game.gameDate).toLocaleString('he-IL')}</span>
-                <span className="muted">רשומים: {game.playersCount}/12</span>
+        {rosterGames.map((rosterGame, index) => (
+          <article key={rosterGame.id} className="card full-width roster-card">
+            <div className="section-head">
+              <div>
+                <p className="section-kicker">{index === 0 ? 'Lineup' : 'Next Lineup'}</p>
+                <h2>{index === 0 ? 'שמות הנרשמים למשחק הקרוב' : 'שמות הנרשמים למשחק הבא'}</h2>
               </div>
-              {game.location && (
-                <p>
-                  מיקום: <strong>{game.location}</strong>
-                </p>
+              <span className={`status-badge status-${rosterGame.status}`}>{getStatusLabel(rosterGame.status)}</span>
+            </div>
+            <p className="muted roster-meta">
+              {rosterGame.title} | {new Date(rosterGame.gameDate).toLocaleString('he-IL')}
+            </p>
+            <ul className="players players-grid">
+              {rosterGame.players.length ? (
+                rosterGame.players.map((player) => (
+                  <li key={player.registrationId}>
+                    <span>
+                      <strong>#{player.position}</strong> {player.name}
+                    </span>
+                    <span className={`tag ${player.role === 'PLAYING' ? 'tag-play' : 'tag-wait'}`}>
+                      {player.role === 'PLAYING' ? 'משחק' : 'המתנה'}
+                    </span>
+                  </li>
+                ))
+              ) : (
+                <li className="muted">עדיין אין נרשמים למשחק הזה.</li>
               )}
-              {game.notes && <p className="muted">הערות: {game.notes}</p>}
-              {game.createdByName && <p className="muted">נוצר על ידי: {game.createdByName}</p>}
-              <p className="muted">
-                דדליין הרשמה: {new Date(game.registrationDeadline).toLocaleString('he-IL')}. תזכורת Push תישלח למי שהתקין את האפליקציה בדיוק בזמן הזה.
-              </p>
-              {user && game.viewerPosition && (
-                <p>
-                  המיקום שלך: <strong>#{game.viewerPosition}</strong> | סטטוס אישי:{' '}
-                  <strong>{game.viewerRole === 'PLAYING' ? 'משחק' : 'המתנה'}</strong>
-                </p>
-              )}
-              {game.isRegistrationClosed && (
-                <p className="message message-error">
-                  ההרשמה נסגרה למשחק הזה כי נותרו פחות מ-{apiConfig?.registrationLeadHours || 24} שעות עד הפתיחה.
-                </p>
-              )}
-              <p className="muted">כללי ליגה: 6+ מאשר משחק, 10-11 ברשימת המתנה, 12 נועלים את המשחק.</p>
-            </>
-          ) : (
-            <p className="muted">אין כרגע משחק מתוכנן. כל משתתף רשום יכול ליצור משחק חדש.</p>
-          )}
-        </article>
-
-        <article className="card full-width">
-          <h3>משחקים עתידיים פעילים</h3>
-          <p className="muted">אפשר להחזיק עד {maxActiveGames} משחקים עתידיים במקביל.</p>
-          <ul className="players">
-            {upcomingGames.length ? (
-              upcomingGames.map((upcoming) => (
-                <li key={upcoming.id}>
-                  <span>
-                    <strong>{upcoming.title}</strong> | {new Date(upcoming.gameDate).toLocaleString('he-IL')}
-                  </span>
-                  <span className={`tag ${upcoming.status === 'WAITING' || upcoming.status === 'LOCKED' ? 'tag-wait' : 'tag-play'}`}>
-                    {getStatusLabel(upcoming.status)}
-                  </span>
-                </li>
-              ))
-            ) : (
-              <li className="muted">אין כרגע משחקים עתידיים.</li>
-            )}
-          </ul>
-        </article>
-
-        <article className="card full-width">
-          <h3>רשימת נרשמים</h3>
-          <ul className="players">
-            {game?.players.length ? (
-              game.players.map((player) => (
-                <li key={player.registrationId}>
-                  <span>
-                    <strong>#{player.position}</strong> {player.name}
-                  </span>
-                  <span className={`tag ${player.role === 'PLAYING' ? 'tag-play' : 'tag-wait'}`}>
-                    {player.role === 'PLAYING' ? 'משחק' : 'המתנה'}
-                  </span>
-                </li>
-              ))
-            ) : (
-              <li className="muted">עדיין אין נרשמים למשחק.</li>
-            )}
-          </ul>
-        </article>
+            </ul>
+          </article>
+        ))}
       </section>
 
       {error && <section className="message message-error">{error}</section>}
