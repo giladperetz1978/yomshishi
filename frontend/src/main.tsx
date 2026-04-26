@@ -3,13 +3,6 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 
-const isGithubPagesHost = window.location.hostname.endsWith('github.io')
-const publicAppUrl = String(import.meta.env.VITE_PUBLIC_APP_URL || 'http://144.91.96.77:8787').replace(/\/$/, '')
-
-if (isGithubPagesHost && publicAppUrl) {
-  window.location.replace(`${publicAppUrl}/`)
-}
-
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />

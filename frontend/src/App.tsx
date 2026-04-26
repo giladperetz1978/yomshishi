@@ -84,7 +84,10 @@ declare global {
 }
 
 const configuredApiBase = String(import.meta.env.VITE_API_BASE_URL || '').trim()
-const API_BASE = configuredApiBase ? configuredApiBase.replace(/\/$/, '') : ''
+// On GitHub Pages, use VPS backend; locally use same-origin
+const isGithubPages = window.location.hostname.endsWith('github.io')
+const defaultApiBase = isGithubPages ? 'http://144.91.96.77:8787' : ''
+const API_BASE = configuredApiBase || defaultApiBase
 const USER_ID_KEY = 'yomshishi_user_id'
 
 function readStoredUserId(): number | null {
