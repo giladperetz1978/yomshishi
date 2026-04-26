@@ -1,5 +1,39 @@
-const CACHE_NAME = 'yomshishi-pwa-v1';
+const CACHE_NAME = 'yomshishi-pwa-v2';
 const OFFLINE_URLS = ['/', '/index.html', '/manifest.webmanifest'];
+
+function shouldBypassCache(url) {
+  return url.pathname.startsWith('/api/') || url.hostname.includes('accounts.google.com');
+}
+
+async function networkFirst(request) {
+  try {
+    const response = await fetch(request);
+    const cloned = response.clone();
+    caches.open(CACHE_NAME).then((cache) => cache.put(request, cloned));
+    return response;
+  } catch (_error) {
+    const cached = await caches.match(request);
+    return cached || caches.match('/index.html');
+  }
+}
+
+async function staleWhileRevalidate(request) {
+  const cached = await caches.match(request);
+  const networkPromise = fetch(request)
+    .then((response) => {
+      const cloned = response.clone();
+      caches.open(CACHE_NAME).then((cache) => cache.put(request, cloned));
+      return response;
+    })
+    .catch(() => null);
+
+  if (cached) {
+    return cached;
+  }
+
+  const networkResponse = await networkPromise;
+  return networkResponse || caches.match('/index.html');
+}
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -24,21 +58,15 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) {
-        return cached;
-      }
+  const requestUrl = new URL(event.request.url);
+  if (shouldBypassCache(requestUrl)) {
+    event.respondWith(fetch(event.request));
+    return;
+  }
 
-      return fetch(event.request)
-        .then((response) => {
-          const cloned = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, cloned));
-          return response;
-        })
-        .catch(() => caches.match('/index.html'));
-    })
-  );
+  const isNavigationRequest = event.request.mode === 'navigate';
+
+  event.respondWith(isNavigationRequest ? networkFirst(event.request) : staleWhileRevalidate(event.request));
 });
 
 self.addEventListener('push', (event) => {
