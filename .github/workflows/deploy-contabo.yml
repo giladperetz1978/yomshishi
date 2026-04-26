@@ -25,13 +25,6 @@ jobs:
           script: |
             set -e
             export DEBIAN_FRONTEND=noninteractive
-            mkdir -p ~/apps
-            if [ ! -d ~/apps/yomshishi/.git ]; then
-              git clone https://github.com/${{ github.repository }}.git ~/apps/yomshishi
-            fi
-            cd ~/apps/yomshishi
-            git fetch origin main
-            git reset --hard origin/main
             if command -v apt-get >/dev/null 2>&1; then
               apt-get update -y
               apt-get install -y curl git ca-certificates
@@ -40,6 +33,15 @@ jobs:
                 apt-get install -y nodejs
               fi
             fi
+            mkdir -p ~/apps/yomshishi
+            cd ~/apps/yomshishi
+            if [ ! -d .git ]; then
+              git init
+              git remote add origin https://github.com/${{ github.repository }}.git
+            fi
+            git remote set-url origin https://github.com/${{ github.repository }}.git
+            git fetch --depth=1 origin main
+            git reset --hard origin/main
             if ! command -v pm2 >/dev/null 2>&1; then
               npm install -g pm2
             fi
