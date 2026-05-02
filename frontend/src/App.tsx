@@ -419,7 +419,7 @@ function App() {
       writeStoredUserId(response.user.id)
       setPlayerPassword('')
       await refreshAll(response.user.id)
-      setSuccess('נכנסת בהצלחה.')
+      setSuccess('אחרי לחיצה על אישור יש להירשם למשחק הקרוב.')
     } catch (requestError: unknown) {
       const errorMessage = requestError instanceof Error ? requestError.message : 'הכניסה נכשלה.'
       setError(errorMessage)
