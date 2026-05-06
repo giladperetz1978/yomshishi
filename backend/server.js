@@ -5,6 +5,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const initSqlJs = require('sql.js');
+const webpush = require('web-push');
 
 dotenv.config();
 
@@ -32,6 +33,13 @@ const ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || 'liga').trim();
 const ADMIN_TOKEN_TTL_MS = 1000 * 60 * 60 * 12;
 const REGISTRATION_LOCK_HOUR = Number(process.env.REGISTRATION_LOCK_HOUR || 20);
 const MAX_ACTIVE_GAMES = 2;
+const VAPID_PUBLIC_KEY = String(process.env.VAPID_PUBLIC_KEY || '').trim();
+const VAPID_PRIVATE_KEY = String(process.env.VAPID_PRIVATE_KEY || '').trim();
+const VAPID_SUBJECT = String(process.env.VAPID_SUBJECT || 'mailto:admin@yomshishi.local');
+
+if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+  webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+}
 
 let db;
 const adminSessions = new Map();
@@ -556,6 +564,85 @@ function validateGameInput(payload) {
   };
 }
 
+function getPushSubscriptionsForUser(userId) {
+  return all(
+    `SELECT id, endpoint, p256dh, auth
+     FROM push_subscriptions
+     WHERE user_id = ?`,
+    [userId]
+  );
+}
+
+async function sendPushNotificationToSubscription(subscription, payload) {
+  if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
+    return { sent: false, error: 'VAPID keys not configured' };
+  }
+
+  try {
+    await webpush.sendNotification(subscription, JSON.stringify(payload));
+    return { sent: true };
+  } catch (error) {
+    const err = error;
+    if (err?.statusCode === 410 || err?.statusCode === 404) {
+      // Subscription expired or invalid, remove it
+      run('DELETE FROM push_subscriptions WHERE endpoint = ?', [subscription.endpoint]);
+      return { sent: false, removed: true };
+    }
+    return { sent: false, error: err?.message || 'Unknown error' };
+  }
+}
+
+async function dispatchGameNotifications(gameId, notificationType) {
+  const game = getGameRow(gameId);
+  if (!game) {
+    return;
+  }
+
+  const registrations = all(
+    `SELECT DISTINCT user_id FROM registrations WHERE game_id = ?`,
+    [gameId]
+  );
+
+  const gameDate = new Date(game.game_date);
+  const payload = {
+    title: game.title || 'משחק שישי',
+    message: notificationType === 'HOUR_BEFORE_CLOSE'
+      ? 'שעה לפני נעילת ההרשמה! עוד זמן להרשם.'
+      : 'חצי שעה לפני המשחק! התכוננו בעדו.',
+  };
+
+  for (const reg of registrations) {
+    const userId = Number(reg.user_id);
+    const subscriptions = getPushSubscriptionsForUser(userId);
+
+    const alreadySent = get(
+      'SELECT id FROM notification_history WHERE game_id = ? AND user_id = ? AND notification_type = ?',
+      [gameId, userId, notificationType]
+    );
+
+    if (alreadySent) {
+      continue;
+    }
+
+    for (const sub of subscriptions) {
+      await sendPushNotificationToSubscription(
+        {
+          endpoint: sub.endpoint,
+          keys: { p256dh: sub.p256dh, auth: sub.auth },
+        },
+        payload
+      );
+    }
+
+    run(
+      'INSERT OR IGNORE INTO notification_history (game_id, user_id, notification_type, sent_at) VALUES (?, ?, ?, ?)',
+      [gameId, userId, notificationType, nowIso()]
+    );
+  }
+
+  persistDb();
+}
+
 async function bootstrapDatabase() {
   if (!fs.existsSync(DB_DIR)) {
     fs.mkdirSync(DB_DIR, { recursive: true });
@@ -631,6 +718,29 @@ async function bootstrapDatabase() {
       updated_at TEXT NOT NULL,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      endpoint TEXT NOT NULL,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, endpoint),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS notification_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      game_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      notification_type TEXT NOT NULL,
+      sent_at TEXT NOT NULL,
+      UNIQUE(game_id, user_id, notification_type),
+      FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
   `);
 
   ensureColumn('users', 'first_name', "TEXT NOT NULL DEFAULT ''");
@@ -680,7 +790,7 @@ async function startServer() {
 
   app.get('/api/config', (_req, res) => {
     res.json({
-      vapidPublicKey: '',
+      vapidPublicKey: VAPID_PUBLIC_KEY,
       closedGroupEnabled: false,
       registrationLeadHours: 0,
       registrationLockHour: REGISTRATION_LOCK_HOUR,
@@ -688,6 +798,52 @@ async function startServer() {
       adminLoginEnabled: Boolean(ADMIN_USERNAME && ADMIN_PASSWORD),
     });
   });
+
+  app.post('/api/push/subscribe', (req, res) => {
+    const userId = Number(req.body?.userId);
+    const subscription = req.body?.subscription;
+
+    const requester = getRequester(userId);
+    if (requester.error) {
+      return res.status(requester.error.status).json({ message: requester.error.message });
+    }
+
+    if (!subscription || !subscription.endpoint) {
+      return res.status(400).json({ message: 'Invalid subscription object.' });
+    }
+
+    if (!subscription.keys || !subscription.keys.p256dh || !subscription.keys.auth) {
+      return res.status(400).json({ message: 'Missing subscription keys.' });
+    }
+
+    run(
+      `INSERT OR REPLACE INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [userId, subscription.endpoint, subscription.keys.p256dh, subscription.keys.auth, nowIso(), nowIso()]
+    );
+
+    persistDb();
+    return res.json({ ok: true, message: 'Subscription saved.' });
+  });
+
+  app.post('/api/push/unsubscribe', (req, res) => {
+    const userId = Number(req.body?.userId);
+    const endpoint = String(req.body?.endpoint || '');
+
+    const requester = getRequester(userId);
+    if (requester.error) {
+      return res.status(requester.error.status).json({ message: requester.error.message });
+    }
+
+    if (!endpoint) {
+      return res.status(400).json({ message: 'Endpoint is required.' });
+    }
+
+    run('DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?', [userId, endpoint]);
+    persistDb();
+    return res.json({ ok: true });
+  });
+
 
   app.post('/api/admin/login', (req, res) => {
     if (!ADMIN_USERNAME || !ADMIN_PASSWORD) {
@@ -1027,10 +1183,41 @@ async function startServer() {
     res.status(404).json({ message: 'Endpoint לא נמצא.' });
   });
 
+  // Scheduled job to check for notifications to dispatch
+  setInterval(async () => {
+    try {
+      const upcomingGameIds = getUpcomingGameIds(100);
+      const now = Date.now();
+
+      for (const gameId of upcomingGameIds) {
+        const game = getGameRow(gameId);
+        if (!game) continue;
+
+        const gameTime = new Date(game.game_date).getTime();
+        const lockTime = new Date(registrationDeadlineIso(game.game_date)).getTime();
+
+        // Send notification 1 hour before registration closes (23 hours before game)
+        const oneHourBeforeClose = lockTime - 60 * 60 * 1000;
+        if (Math.abs(now - oneHourBeforeClose) < 60 * 1000) { // Within 1-minute window
+          await dispatchGameNotifications(gameId, 'HOUR_BEFORE_CLOSE');
+        }
+
+        // Send notification 30 minutes before game
+        const thirtyMinutesBeforeGame = gameTime - 30 * 60 * 1000;
+        if (Math.abs(now - thirtyMinutesBeforeGame) < 60 * 1000) { // Within 1-minute window
+          await dispatchGameNotifications(gameId, 'THIRTY_MIN_BEFORE_GAME');
+        }
+      }
+    } catch (error) {
+      console.error('Notification scheduler error:', error);
+    }
+  }, 30 * 1000); // Check every 30 seconds
+
   app.listen(PORT, () => {
     console.log(`API listening on http://localhost:${PORT}`);
   });
 }
+
 
 startServer().catch((error) => {
   console.error('Failed to start server:', error);

@@ -74,13 +74,40 @@ self.addEventListener('push', (event) => {
     title: 'תזכורת משחק',
     message: 'יש משחק בקרוב. בדקו את ההרשמה שלכם.'
   };
-  const payload = event.data ? event.data.json() : fallback;
+  
+  let payload = fallback;
+  if (event.data) {
+    try {
+      payload = event.data.json();
+    } catch (_e) {
+      payload = { title: event.data.text() || fallback.title, message: fallback.message };
+    }
+  }
 
   event.waitUntil(
     self.registration.showNotification(payload.title || fallback.title, {
       body: payload.message || fallback.message,
       icon: '/pwa-192.png',
-      badge: '/pwa-192.png'
+      badge: '/pwa-192.png',
+      tag: 'yomshishi-game-reminder',
+      requireInteraction: true
     })
   );
 });
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      for (let i = 0; i < clientList.length; i++) {
+        if (clientList[i].url === '/' && 'focus' in clientList[i]) {
+          return clientList[i].focus();
+        }
+      }
+      if (clients.openWindow) {
+        return clients.openWindow('/');
+      }
+    })
+  );
+});
+
