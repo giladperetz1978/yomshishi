@@ -600,6 +600,55 @@ textarea {
   margin-top: 14px;
 }
 
+.tabs-card {
+  padding: 12px;
+}
+
+.tabs-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+}
+
+.tab-btn {
+  border: 1px solid rgba(95, 209, 255, 0.34);
+  background: rgba(7, 20, 42, 0.9);
+  color: #dceefe;
+  border-radius: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.tab-btn-active {
+  background: rgba(95, 209, 255, 0.24);
+  color: #ffffff;
+}
+
+.info-card {
+  background: linear-gradient(180deg, rgba(8, 15, 37, 0.96), rgba(6, 12, 30, 0.96));
+}
+
+.rules-list {
+  margin: 0;
+  padding-right: 18px;
+  display: grid;
+  gap: 8px;
+  color: var(--ink-soft);
+}
+
+.lottery-list {
+  margin-top: 10px;
+}
+
+.lottery-out {
+  opacity: 0.78;
+}
+
+.lottery-out strong {
+  text-decoration: line-through;
+}
+
 .next-game-card,
 .roster-card {
   background: linear-gradient(180deg, rgba(7, 13, 34, 0.96), rgba(5, 10, 28, 0.96));

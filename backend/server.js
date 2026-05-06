@@ -530,6 +530,58 @@ function serializeGame(gameId, viewerUserId = null) {
   };
 }
 
+function getLotteryOverview() {
+  const currentGameId = getUpcomingGameId();
+  const currentGame = currentGameId ? serializeGame(currentGameId, null) : null;
+  const roleByUserId = new Map();
+
+  if (currentGameId) {
+    const rows = all(
+      `SELECT user_id, role
+       FROM registrations
+       WHERE game_id = ?`,
+      [currentGameId]
+    );
+
+    rows.forEach((row) => {
+      roleByUserId.set(Number(row.user_id), String(row.role || ''));
+    });
+  }
+
+  const players = all(
+    `SELECT u.id, u.name, COALESCE(ls.bench_count, 0) AS bench_count
+     FROM users u
+     LEFT JOIN lottery_stats ls ON ls.user_id = u.id
+     WHERE u.is_active = 1
+     ORDER BY u.name COLLATE NOCASE ASC, u.id ASC`
+  ).map((row) => {
+    const userId = Number(row.id);
+    const role = roleByUserId.get(userId) || null;
+    return {
+      id: userId,
+      name: row.name,
+      benchCount: Number(row.bench_count),
+      isRegisteredToCurrentGame: role !== null,
+      role,
+      isOutInCurrentLottery: role === 'WAITING',
+    };
+  });
+
+  return {
+    game: currentGame
+      ? {
+          id: currentGame.id,
+          title: currentGame.title,
+          gameDate: currentGame.gameDate,
+          registrationDeadline: currentGame.registrationDeadline,
+          status: currentGame.status,
+          playersCount: currentGame.playersCount,
+        }
+      : null,
+    players,
+  };
+}
+
 function validateGameInput(payload) {
   const title = String(payload?.title || '').trim() || 'משחק שישי';
   const location = String(payload?.location || '').trim();
@@ -714,6 +766,10 @@ async function startServer() {
   app.get('/api/players/active', (_req, res) => {
     const players = getActivePlayerRows().map((user) => ({ id: Number(user.id), name: user.name }));
     return res.json({ players });
+  });
+
+  app.get('/api/lottery/overview', (_req, res) => {
+    return res.json(getLotteryOverview());
   });
 
   app.post('/api/auth/select-player', (req, res) => {

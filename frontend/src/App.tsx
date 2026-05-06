@@ -81,6 +81,29 @@ type GameFormState = {
   gameDate: string
 }
 
+type AppTab = 'main' | 'rules' | 'lottery'
+
+type LotteryOverviewPlayer = {
+  id: number
+  name: string
+  benchCount: number
+  isRegisteredToCurrentGame: boolean
+  role: PlayerRole | null
+  isOutInCurrentLottery: boolean
+}
+
+type LotteryOverviewResponse = {
+  game: {
+    id: number
+    title: string
+    gameDate: string
+    registrationDeadline: string
+    status: GameStatus
+    playersCount: number
+  } | null
+  players: LotteryOverviewPlayer[]
+}
+
 const configuredApiBase = String(import.meta.env.VITE_API_BASE_URL || '').trim()
 const API_BASE = configuredApiBase ? configuredApiBase.replace(/\/$/, '') : ''
 const USER_ID_KEY = 'yomshishi_user_id_v3'
@@ -284,6 +307,8 @@ function App() {
   const [adminPassword, setAdminPassword] = useState('')
   const [adminToken, setAdminToken] = useState<string>(() => readStoredAdminToken())
   const [authTab, setAuthTab] = useState<'player' | 'admin'>('player')
+  const [activeTab, setActiveTab] = useState<AppTab>('main')
+  const [lotteryOverview, setLotteryOverview] = useState<LotteryOverviewResponse | null>(null)
 
   const registeredUserId = useMemo(() => readStoredUserId(), [])
   const hasAdminSession = Boolean(adminToken)
@@ -362,8 +387,13 @@ function App() {
     setMaxActiveGames(response.maxActiveGames || 2)
   }
 
+  async function refreshLotteryOverview() {
+    const response = await apiRequest<LotteryOverviewResponse>('/api/lottery/overview')
+    setLotteryOverview(response)
+  }
+
   async function refreshAll(userId?: number) {
-    await Promise.all([refreshGame(userId), refreshUpcomingGames(userId), refreshPlayersList()])
+    await Promise.all([refreshGame(userId), refreshUpcomingGames(userId), refreshPlayersList(), refreshLotteryOverview()])
   }
 
   function logout() {
@@ -776,6 +806,34 @@ function App() {
 
         {!isLandingMode && (
           <>
+            <article className="card full-width tabs-card">
+              <div className="tabs-row">
+                <button
+                  type="button"
+                  className={`tab-btn ${activeTab === 'main' ? 'tab-btn-active' : ''}`}
+                  onClick={() => setActiveTab('main')}
+                >
+                  משחקים והרשמה
+                </button>
+                <button
+                  type="button"
+                  className={`tab-btn ${activeTab === 'rules' ? 'tab-btn-active' : ''}`}
+                  onClick={() => setActiveTab('rules')}
+                >
+                  איך ההרשמה עובדת
+                </button>
+                <button
+                  type="button"
+                  className={`tab-btn ${activeTab === 'lottery' ? 'tab-btn-active' : ''}`}
+                  onClick={() => setActiveTab('lottery')}
+                >
+                  סבב הגרלות
+                </button>
+              </div>
+            </article>
+
+            {activeTab === 'main' && (
+              <>
             <article className="card full-width game-spotlight">
               <div className="section-head">
                 <div>
@@ -1079,6 +1137,68 @@ function App() {
                 </ul>
               </article>
             ))}
+              </>
+            )}
+
+            {activeTab === 'rules' && (
+              <article className="card full-width info-card">
+                <div className="section-head">
+                  <div>
+                    <p className="section-kicker">Registration Rules</p>
+                    <h2>כללי הרשמה והגרלה</h2>
+                  </div>
+                </div>
+
+                <ul className="rules-list">
+                  <li>ההרשמה נסגרת יום לפני המשחק בשעה {String(apiConfig?.registrationLockHour || 20).padStart(2, '0')}:00.</li>
+                  <li>עד 9 נרשמים: כולם משחקים.</li>
+                  <li>10 נרשמים: אחד יוצא בהגרלה.</li>
+                  <li>11 נרשמים: שניים יוצאים בהגרלה.</li>
+                  <li>12 נרשמים: כולם משחקים (LOCKED).</li>
+                  <li>13 ומעלה: 12 הראשונים בהרכב, והנוספים בסבב המתנה.</li>
+                  <li>ההגרלה מתבצעת אוטומטית בשרת לפי סבב הוגן: מי שישב פחות פעמים מקבל עדיפות.</li>
+                  <li>בשוויון במספר הפעמים שישבו בחוץ: מתבצע ערבוב אקראי בין השחקנים הרלוונטיים.</li>
+                  <li>שחקן שיוצא בהגרלה מגיע שעה אחרי תחילת המשחק ויכול להחליף שחקנים עייפים.</li>
+                </ul>
+              </article>
+            )}
+
+            {activeTab === 'lottery' && (
+              <article className="card full-width info-card">
+                <div className="section-head">
+                  <div>
+                    <p className="section-kicker">Lottery Rotation</p>
+                    <h2>מי יצא בסבב ההגרלות</h2>
+                  </div>
+                </div>
+
+                {lotteryOverview?.game ? (
+                  <p className="muted roster-meta">
+                    {lotteryOverview.game.title} | {formatGameDateTime(lotteryOverview.game.gameDate)} | נרשמו {lotteryOverview.game.playersCount}
+                  </p>
+                ) : (
+                  <p className="muted roster-meta">אין כרגע משחק קרוב להצגת הגרלה.</p>
+                )}
+
+                <ul className="players players-grid lottery-list">
+                  {(lotteryOverview?.players || []).map((player) => (
+                    <li key={player.id} className={player.isOutInCurrentLottery ? 'lottery-out' : ''}>
+                      <span>
+                        <strong>{player.name}</strong>
+                        {' | '}ישב בחוץ {player.benchCount} פעמים
+                      </span>
+                      <span className={`tag ${player.isOutInCurrentLottery ? 'tag-wait' : 'tag-play'}`}>
+                        {player.isOutInCurrentLottery
+                          ? 'בחוץ בסבב הנוכחי'
+                          : player.isRegisteredToCurrentGame
+                            ? 'משחק בסבב הנוכחי'
+                            : 'לא רשום למשחק הנוכחי'}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </article>
+            )}
           </>
         )}
       </section>
