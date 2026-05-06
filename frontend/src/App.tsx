@@ -221,48 +221,6 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return payload as T
 }
 
-async function subscribeToPushNotifications(userId: number, vapidPublicKey: string) {
-  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-    return
-  }
-
-  try {
-    const registration = await navigator.serviceWorker.ready
-    const permission = await Notification.requestPermission()
-    
-    if (permission !== 'granted') {
-      return
-    }
-
-    const subscription = await registration.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
-    })
-
-    await apiRequest('/api/push/subscribe', {
-      method: 'POST',
-      body: JSON.stringify({
-        userId,
-        subscription,
-      }),
-    })
-  } catch (error) {
-    console.error('Push subscription failed:', error)
-  }
-}
-
-function urlBase64ToUint8Array(base64String: string): Uint8Array {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
-  const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/')
-  const rawData = window.atob(base64)
-  const outputArray = new Uint8Array(rawData.length)
-  for (let i = 0; i < rawData.length; ++i) {
-    outputArray[i] = rawData.charCodeAt(i)
-  }
-  return outputArray
-}
-
-
 function IntroSplash({ visible }: { visible: boolean }) {
   if (!visible) return null
 
@@ -325,11 +283,6 @@ function App() {
             const userResponse = await apiRequest<{ user: User }>(`/api/users/${registeredUserId}`)
             setUser(userResponse.user)
             await refreshAll(userResponse.user.id)
-            
-            // Subscribe to push notifications if VAPID key is available
-            if (configResponse?.vapidPublicKey) {
-              await subscribeToPushNotifications(userResponse.user.id, configResponse.vapidPublicKey)
-            }
           } catch (_error) {
             clearStoredUserId()
             setUser(null)
@@ -466,12 +419,6 @@ function App() {
       writeStoredUserId(response.user.id)
       setPlayerPassword('')
       await refreshAll(response.user.id)
-      
-      // Subscribe to push notifications if VAPID key is available
-      if (apiConfig?.vapidPublicKey) {
-        await subscribeToPushNotifications(response.user.id, apiConfig.vapidPublicKey)
-      }
-      
       setSuccess('אחרי לחיצה על אישור יש להירשם למשחק הקרוב.')
     } catch (requestError: unknown) {
       const errorMessage = requestError instanceof Error ? requestError.message : 'הכניסה נכשלה.'
