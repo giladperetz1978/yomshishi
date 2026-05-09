@@ -4,11 +4,18 @@ import './index.css'
 import App from './App.tsx'
 
 const isGithubPagesHost = window.location.hostname.endsWith('github.io')
-const publicAppUrl = String(import.meta.env.VITE_PUBLIC_APP_URL || 'https://144.91.96.77.sslip.io').replace(/\/$/, '')
+const configuredPublicAppUrl = String(import.meta.env.VITE_PUBLIC_APP_URL || '').trim().replace(/\/$/, '')
 
-if (isGithubPagesHost && publicAppUrl) {
-  window.location.replace(`${publicAppUrl}/`)
-  throw new Error('Redirecting to VPS...')
+if (isGithubPagesHost && configuredPublicAppUrl) {
+  try {
+    const targetUrl = new URL(configuredPublicAppUrl)
+    if (targetUrl.host !== window.location.host) {
+      window.location.replace(`${configuredPublicAppUrl}/`)
+      throw new Error('Redirecting to external app host...')
+    }
+  } catch (_error) {
+    // Invalid URL in env var should not break app bootstrap.
+  }
 }
 
 createRoot(document.getElementById('root')!).render(
