@@ -158,6 +158,7 @@ const REGISTRATION_PROFILE_KEY = 'come2court_registration_profile_v2'
 const GROUPS_KEY = 'come2court_groups_v2'
 const GROUP_CONFIGS_KEY = 'come2court_group_configs_v2'
 const SELECTED_GROUP_KEY = 'come2court_selected_group_v2'
+const HERO_TITLE_LOOP_WORDS = ['COME', '2', 'COURT'] as const
 
 const I18N: Record<AppLanguage, Record<string, string>> = {
   en: {
@@ -194,9 +195,9 @@ const I18N: Record<AppLanguage, Record<string, string>> = {
     adminSetupTitle: 'Admin game setup',
     gameTypeName: 'Game type name',
     minPlayersCount: 'Minimum players',
-    maxPlayersX: 'Max players X',
-    enableMaxPlayersY: 'Enable max players Y',
-    maxPlayersY: 'Max players Y',
+    maxPlayersX: 'Max players round 1',
+    enableMaxPlayersY: 'Enable round 2',
+    maxPlayersY: 'Max players round 2',
     lockPlayersCount: 'Lock players count',
     lockTime: 'Lock date and time',
     enableLottery: 'Enable lottery for overflow players',
@@ -216,8 +217,8 @@ const I18N: Record<AppLanguage, Record<string, string>> = {
     rulesActiveGroup: 'Active group',
     rulesActiveGameType: 'Active game type',
     rulesMinPlayers: 'Minimum players',
-    rulesMaxX: 'Maximum X',
-    rulesMaxY: 'Maximum Y',
+    rulesMaxX: 'Maximum round 1',
+    rulesMaxY: 'Maximum round 2',
     disabled: 'Disabled',
     yesLabel: 'Yes',
     noLabel: 'No',
@@ -307,7 +308,7 @@ const I18N: Record<AppLanguage, Record<string, string>> = {
     upcomingGame: 'Upcoming game',
     noUpcomingLotteryGame: 'There is no upcoming game to display lottery results.',
     lotteryRuleNoY: 'If Y is disabled and players > X, lottery runs across all registered players with equal rotation.',
-    lotteryRuleWithY: 'If Y is enabled, lottery runs when players > X and < Y, or when players > Y.',
+    lotteryRuleWithY: 'If round 2 is enabled, lottery runs when players exceed round 1 and stay below round 2, or when players exceed round 2.',
   },
   he: {
     language: 'שפה',
@@ -343,9 +344,9 @@ const I18N: Record<AppLanguage, Record<string, string>> = {
     adminSetupTitle: 'הגדרות משחק לאדמין',
     gameTypeName: 'שם סוג המשחק',
     minPlayersCount: 'כמות מינימלית',
-    maxPlayersX: 'כמות מקסימום X',
-    enableMaxPlayersY: 'הפעלת מקסימום Y',
-    maxPlayersY: 'כמות מקסימום Y',
+    maxPlayersX: 'כמות מקסימלית סבב 1',
+    enableMaxPlayersY: 'הפעלת סבב 2',
+    maxPlayersY: 'כמות מקסימלית סבב 2',
     lockPlayersCount: 'כמות שחקנים לנעילה',
     lockTime: 'זמן ותאריך נעילה',
     enableLottery: 'הפעלת הגרלה לעודפים',
@@ -365,8 +366,8 @@ const I18N: Record<AppLanguage, Record<string, string>> = {
     rulesActiveGroup: 'קבוצה פעילה',
     rulesActiveGameType: 'סוג משחק פעיל',
     rulesMinPlayers: 'כמות מינימלית',
-    rulesMaxX: 'כמות מקסימום X',
-    rulesMaxY: 'כמות מקסימום Y',
+    rulesMaxX: 'כמות מקסימלית סבב 1',
+    rulesMaxY: 'כמות מקסימלית סבב 2',
     disabled: 'לא פעיל',
     yesLabel: 'כן',
     noLabel: 'לא',
@@ -1317,7 +1318,7 @@ const I18N: Record<AppLanguage, Record<string, string>> = {
     upcomingGame: 'Upcoming game',
     noUpcomingLotteryGame: 'There is no upcoming game to display lottery results.',
     lotteryRuleNoY: 'If Y is disabled and players > X, lottery runs across all registered players with equal rotation.',
-    lotteryRuleWithY: 'If Y is enabled, lottery runs when players > X and < Y, or when players > Y.',
+    lotteryRuleWithY: 'If round 2 is enabled, lottery runs when players exceed round 1 and stay below round 2, or when players exceed round 2.',
   },
 }
 
@@ -1660,6 +1661,7 @@ function App() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [showIntro, setShowIntro] = useState(true)
+  const [heroTitleWordIndex, setHeroTitleWordIndex] = useState(0)
   const [gameForm, setGameForm] = useState<GameFormState>(() => createEmptyGameForm())
   const [isEditingGame, setIsEditingGame] = useState(false)
   const [editingGameId, setEditingGameId] = useState<number | null>(null)
@@ -1675,6 +1677,7 @@ function App() {
   const text = I18N[language] || I18N.en
   const translate = (key: string) => text[key] || I18N.en[key] || key
   const isOnboardingOpen = !registrationProfile || !selectedGroupId
+  const currentHeroWord = HERO_TITLE_LOOP_WORDS[heroTitleWordIndex]
 
   const registeredUserId = useMemo(() => readStoredUserId(), [])
   const hasAdminSession = Boolean(adminToken)
@@ -1737,6 +1740,14 @@ function App() {
   useEffect(() => {
     const timeoutId = window.setTimeout(() => setShowIntro(false), 2200)
     return () => window.clearTimeout(timeoutId)
+  }, [])
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setHeroTitleWordIndex((currentIndex) => (currentIndex + 1) % HERO_TITLE_LOOP_WORDS.length)
+    }, 1200)
+
+    return () => window.clearInterval(intervalId)
   }, [])
 
   useEffect(() => {
@@ -2506,8 +2517,7 @@ function App() {
 
           <div className="brand-block">
             <h1 className="hero-title-neon" aria-label="Come 2 Court">
-              <span className="hero-title-line">Come 2</span>
-              <span className="hero-title-line">Court</span>
+              <span key={currentHeroWord} className="hero-title-line hero-title-loop">{currentHeroWord}</span>
             </h1>
           </div>
         </div>
@@ -2731,8 +2741,8 @@ function App() {
                         : formatGameDateTime(spotlightGame.registrationDeadline)}
                     </div>
                     <div className="meta-pill">
-                      {translate('rulesSummaryPrefix')}: {translate('rulesMinPlayers')} {selectedGameType?.minPlayers || 6}, X {selectedGameType?.maxPlayersX || 12}
-                      {selectedGameType?.enableMaxPlayersY ? `, Y ${selectedGameType.maxPlayersY}` : ''}
+                      {translate('rulesSummaryPrefix')}: {translate('rulesMinPlayers')} {selectedGameType?.minPlayers || 6}, {translate('rulesMaxX')} {selectedGameType?.maxPlayersX || 12}
+                      {selectedGameType?.enableMaxPlayersY ? `, ${translate('rulesMaxY')} ${selectedGameType.maxPlayersY}` : ''}
                     </div>
                   </div>
 

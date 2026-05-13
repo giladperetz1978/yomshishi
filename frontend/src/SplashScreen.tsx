@@ -65,7 +65,7 @@ export default function SplashScreen({ onFinish }: SplashScreenProps) {
       style={{
         position: 'fixed',
         inset: 0,
-        background: '#0B0F1A',
+        background: 'linear-gradient(180deg, #f3f4fb 0%, #e7ebf5 100%)',
         display: 'flex',
         flexDirection: 'column',
         justifyContent: 'center',
@@ -79,7 +79,12 @@ export default function SplashScreen({ onFinish }: SplashScreenProps) {
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 1.2 }}
-        style={{ color: 'white', marginTop: 24 }}
+        style={{
+          color: '#2a3158',
+          marginTop: 24,
+          fontFamily: "'Noto Sans', 'Noto Sans Hebrew', 'Noto Sans Devanagari', 'Noto Sans SC', sans-serif",
+          fontWeight: 900,
+        }}
       >
         Come 2 Court
       </motion.h1>
