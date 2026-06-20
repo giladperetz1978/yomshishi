@@ -274,12 +274,82 @@ function IntroSplash({ visible }: { visible: boolean }) {
 
   return (
     <div className="intro-overlay">
-      <div className="intro-court">
-        <div className="hoop" />
-        <div className="ball" />
-        <div className="bounce-shadow" />
+      <div className="retro-arcade-cabinet">
+        <div className="retro-court-pixel">
+          <svg viewBox="0 0 450 250" className="retro-svg">
+            {/* Retro sky / background blocks */}
+            <rect width="450" height="200" fill="#5c94fc" />
+            <rect y="200" width="450" height="50" fill="#fc9c5c" />
+            
+            {/* Brick pattern on ground */}
+            <line x1="0" y1="200" x2="450" y2="200" stroke="#000" strokeWidth="4" />
+            <line x1="0" y1="225" x2="450" y2="225" stroke="#000" strokeWidth="2" strokeDasharray="30 10" />
+            <line x1="0" y1="250" x2="450" y2="250" stroke="#000" strokeWidth="4" />
+            
+            {/* Pixel bushes */}
+            <rect x="20" y="176" width="32" height="24" fill="#43b047" stroke="#000" strokeWidth="3" />
+            <rect x="36" y="160" width="32" height="40" fill="#43b047" stroke="#000" strokeWidth="3" />
+            <rect x="52" y="176" width="24" height="24" fill="#43b047" stroke="#000" strokeWidth="3" />
+
+            <rect x="280" y="176" width="24" height="24" fill="#43b047" stroke="#000" strokeWidth="3" />
+            <rect x="296" y="160" width="32" height="40" fill="#43b047" stroke="#000" strokeWidth="3" />
+            
+            {/* Basketball Hoop & Backboard (8-bit style) */}
+            {/* Support pole */}
+            <rect x="390" y="70" width="10" height="130" fill="#767676" stroke="#000" strokeWidth="3" />
+            {/* Backboard */}
+            <rect x="360" y="30" width="48" height="40" fill="#fff" stroke="#000" strokeWidth="4" />
+            <rect x="372" y="42" width="24" height="20" fill="none" stroke="#e52521" strokeWidth="3" />
+            {/* Rim */}
+            <rect x="328" y="68" width="36" height="6" fill="#e52521" stroke="#000" strokeWidth="3" />
+            {/* Net (pixel style) */}
+            <path d="M 332 74 L 338 104 L 354 104 L 360 74 Z" fill="none" stroke="#fff" strokeWidth="3" strokeDasharray="6 3" className="retro-net" />
+
+            {/* Retro Player (8-bit blocky style) */}
+            <g className="retro-player">
+              {/* Shoes */}
+              <rect x="68" y="184" width="12" height="16" fill="#9c4a00" stroke="#000" strokeWidth="2.5" />
+              <rect x="84" y="184" width="12" height="16" fill="#9c4a00" stroke="#000" strokeWidth="2.5" />
+              {/* Legs */}
+              <rect x="72" y="164" width="8" height="20" fill="#002fbe" stroke="#000" strokeWidth="2.5" />
+              <rect x="84" y="164" width="8" height="20" fill="#002fbe" stroke="#000" strokeWidth="2.5" />
+              {/* Torso / Shirt */}
+              <rect x="66" y="124" width="28" height="40" fill="#e52521" stroke="#000" strokeWidth="2.5" />
+              {/* Head */}
+              <rect x="72" y="92" width="20" height="32" fill="#ffcca3" stroke="#000" strokeWidth="2.5" />
+              {/* Mustache */}
+              <rect x="86" y="110" width="10" height="6" fill="#000" />
+              {/* Cap */}
+              <rect x="68" y="84" width="26" height="8" fill="#e52521" stroke="#000" strokeWidth="2.5" />
+              <rect x="80" y="84" width="18" height="8" fill="#e52521" />
+
+              {/* Arm shooting */}
+              <g className="player-arm-group">
+                <rect x="82" y="124" width="24" height="8" fill="#e52521" stroke="#000" strokeWidth="2" className="player-arm" />
+                <rect x="98" y="112" width="8" height="14" fill="#ffcca3" stroke="#000" strokeWidth="2" className="player-hand" />
+              </g>
+            </g>
+
+            {/* Animated Basketball */}
+            <g className="retro-ball-group">
+              <circle cx="106" cy="106" r="10" fill="#fc5c00" stroke="#000" strokeWidth="2.5" className="retro-ball" />
+              {/* Lines on ball */}
+              <path d="M 98 106 Q 106 98 114 106 Q 106 114 98 106" fill="none" stroke="#000" strokeWidth="1" />
+            </g>
+
+            {/* Score pop text */}
+            <text x="330" y="50" className="retro-score-pop" fill="#fcd116" stroke="#000" strokeWidth="1.5">100</text>
+            
+            {/* Floating Coin */}
+            <g className="retro-coin">
+              <circle cx="346" cy="36" r="8" fill="#fcd116" stroke="#000" strokeWidth="2" />
+              <rect x="344" y="32" width="4" height="8" fill="#ffeb3b" />
+            </g>
+          </svg>
+        </div>
       </div>
       <p className="intro-title">YomShishi Basketball</p>
+      <div className="retro-press-start">LOADING...</div>
     </div>
   )
 }
