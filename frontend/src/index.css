@@ -73,6 +73,10 @@ textarea {
   animation: intro-fade 2.2s forwards;
 }
 
+.intro-gif-overlay {
+  animation: none;
+}
+
 .retro-arcade-cabinet {
   border: 6px solid #444;
   outline: 6px solid #000;
