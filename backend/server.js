@@ -487,8 +487,47 @@ function recalculateLockedGames() {
 
     if (!isRegistrationOpen(game.game_date)) {
       recalculateGame(gameId);
+      createGameSnapshot(gameId);
     }
   });
+
+  cleanupOldSnapshots();
+}
+
+function createGameSnapshot(gameId) {
+  // Only create one snapshot per game
+  const existing = get('SELECT id FROM snapshots WHERE game_id = ?', [gameId]);
+  if (existing) {
+    return;
+  }
+
+  const game = serializeGame(gameId);
+  if (!game || game.players.length === 0) {
+    return;
+  }
+
+  const snapshotData = JSON.stringify(
+    game.players.map((p) => ({
+      name: p.name,
+      position: p.position,
+      role: p.role === 'PLAYING' ? 'משחק' : 'ממתין',
+    }))
+  );
+
+  run(
+    'INSERT INTO snapshots (game_id, game_title, game_date, player_list_json, created_at) VALUES (?, ?, ?, ?, ?)',
+    [gameId, game.title, game.gameDate, snapshotData, nowIso()]
+  );
+  persistDb();
+}
+
+function cleanupOldSnapshots() {
+  // Delete snapshots older than 7 days
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+  const iso = sevenDaysAgo.toISOString();
+
+  run('DELETE FROM snapshots WHERE created_at < ?', [iso]);
 }
 
 function serializeGame(gameId, viewerUserId = null) {
@@ -702,6 +741,15 @@ async function bootstrapDatabase() {
       updated_at TEXT NOT NULL,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      game_id INTEGER NOT NULL,
+      game_title TEXT NOT NULL,
+      game_date TEXT NOT NULL,
+      player_list_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
   `);
 
   ensureColumn('users', 'first_name', "TEXT NOT NULL DEFAULT ''");
@@ -789,6 +837,35 @@ async function startServer() {
 
   app.get('/api/lottery/overview', (_req, res) => {
     return res.json(getLotteryOverview());
+  });
+
+  app.get('/api/snapshots', (_req, res) => {
+    const rows = all('SELECT id, game_title, game_date, created_at FROM snapshots ORDER BY created_at DESC');
+    return res.json({ snapshots: rows });
+  });
+
+  app.get('/api/snapshots/:id/download', (req, res) => {
+    const id = Number(req.params.id);
+    const snapshot = get('SELECT game_title, game_date, player_list_json FROM snapshots WHERE id = ?', [id]);
+    
+    if (!snapshot) {
+      return res.status(404).json({ message: 'הקובץ לא נמצא.' });
+    }
+
+    const players = JSON.parse(snapshot.player_list_json);
+    const dateStr = new Date(snapshot.game_date).toLocaleDateString('he-IL').replace(/\//g, '-');
+    const fileName = `players_${dateStr}.txt`;
+
+    let content = `רשימת שחקנים - ${snapshot.game_title}\n`;
+    content += `תאריך משחק: ${new Date(snapshot.game_date).toLocaleString('he-IL')}\n`;
+    content += `-----------------------------------\n`;
+    players.forEach((p) => {
+      content += `${p.position}. ${p.name} - [${p.role}]\n`;
+    });
+
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+    return res.send(content);
   });
 
   app.post('/api/auth/select-player', (req, res) => {

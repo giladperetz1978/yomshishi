@@ -81,7 +81,7 @@ type GameFormState = {
   gameDate: string
 }
 
-type AppTab = 'main' | 'rules' | 'lottery'
+type AppTab = 'main' | 'rules' | 'lottery' | 'snapshots'
 
 type LotteryOverviewPlayer = {
   id: number
@@ -102,6 +102,13 @@ type LotteryOverviewResponse = {
     playersCount: number
   } | null
   players: LotteryOverviewPlayer[]
+}
+
+type Snapshot = {
+  id: number
+  game_title: string
+  game_date: string
+  created_at: string
 }
 
 const configuredApiBase = String(import.meta.env.VITE_API_BASE_URL || '').trim()
@@ -396,6 +403,7 @@ function App() {
   const [authTab, setAuthTab] = useState<'player' | 'admin'>('player')
   const [activeTab, setActiveTab] = useState<AppTab>('main')
   const [lotteryOverview, setLotteryOverview] = useState<LotteryOverviewResponse | null>(null)
+  const [snapshots, setSnapshots] = useState<Snapshot[]>([])
 
   const registeredUserId = useMemo(() => readStoredUserId(), [])
   const hasAdminSession = Boolean(adminToken)
@@ -490,8 +498,19 @@ function App() {
     setLotteryOverview(response)
   }
 
+  async function refreshSnapshots() {
+    const response = await apiRequest<{ snapshots: Snapshot[] }>('/api/snapshots')
+    setSnapshots(response.snapshots || [])
+  }
+
   async function refreshAll(userId?: number) {
-    await Promise.all([refreshGame(userId), refreshUpcomingGames(userId), refreshPlayersList(), refreshLotteryOverview()])
+    await Promise.all([
+      refreshGame(userId),
+      refreshUpcomingGames(userId),
+      refreshPlayersList(),
+      refreshLotteryOverview(),
+      refreshSnapshots(),
+    ])
   }
 
   function logout() {
@@ -928,6 +947,13 @@ function App() {
                 >
                   סבב הגרלות
                 </button>
+                <button
+                  type="button"
+                  className={`tab-btn ${activeTab === 'snapshots' ? 'tab-btn-active' : ''}`}
+                  onClick={() => setActiveTab('snapshots')}
+                >
+                  רשימות שחקנים
+                </button>
               </div>
             </article>
 
@@ -1298,6 +1324,40 @@ function App() {
                     </li>
                   ))}
                 </ul>
+              </article>
+            )}
+
+            {activeTab === 'snapshots' && (
+              <article className="card full-width">
+                <div className="section-head">
+                  <div>
+                    <p className="section-kicker">Archive</p>
+                    <h2>רשימות שחקנים מהמשחקים האחרונים</h2>
+                  </div>
+                </div>
+                {snapshots.length === 0 ? (
+                  <p className="card-note">טרם נשמרו רשימות.</p>
+                ) : (
+                  <ul className="stats-list">
+                    {snapshots.map((s) => (
+                      <li key={s.id} className="stats-item">
+                        <div className="stats-info">
+                          <p className="stats-name">{s.game_title}</p>
+                          <p className="stats-bench">שוחק ב: {formatGameDate(s.game_date)}</p>
+                        </div>
+                        <a 
+                          href={`${API_BASE}/api/snapshots/${s.id}/download`} 
+                          download 
+                          className="cta cta-secondary"
+                          style={{ minWidth: 'auto', padding: '6px 12px' }}
+                        >
+                          הורדה
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <p className="card-note" style={{ marginTop: '16px' }}>הרשימות נשמרות למשך שבוע בלבד מרגע נעילת המשחק.</p>
               </article>
             )}
           </>
