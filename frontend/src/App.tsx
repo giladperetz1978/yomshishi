@@ -35,6 +35,7 @@ type Player = {
   position: number
   role: PlayerRole
   joinedAt: string
+  appearancesCount?: number
 }
 
 type Game = {
@@ -81,7 +82,26 @@ type GameFormState = {
   gameDate: string
 }
 
-type AppTab = 'main' | 'rules' | 'lottery' | 'snapshots'
+type AppTab = 'main' | 'equipment' | 'rules' | 'lottery' | 'snapshots'
+
+type EquipmentItem = {
+  id: number
+  gameId: number
+  userId: number
+  userName: string
+  itemName: string
+  updatedAt: string
+}
+
+type EquipmentOverviewResponse = {
+  game: {
+    id: number
+    title: string
+    gameDate: string
+  } | null
+  items: EquipmentItem[]
+  canEdit: boolean
+}
 
 type LotteryOverviewPlayer = {
   id: number
@@ -387,6 +407,8 @@ function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('main')
   const [lotteryOverview, setLotteryOverview] = useState<LotteryOverviewResponse | null>(null)
   const [snapshots, setSnapshots] = useState<Snapshot[]>([])
+  const [equipmentOverview, setEquipmentOverview] = useState<EquipmentOverviewResponse | null>(null)
+  const [userEquipmentInput, setUserEquipmentInput] = useState('')
 
   const registeredUserId = useMemo(() => readStoredUserId(), [])
   const hasAdminSession = Boolean(adminToken)
@@ -481,6 +503,15 @@ function App() {
     setSnapshots(response.snapshots || [])
   }
 
+  async function refreshEquipmentOverview() {
+    const response = await apiRequest<EquipmentOverviewResponse>('/api/equipment/current')
+    setEquipmentOverview(response)
+    if (user) {
+      const myItem = response.items.find((i) => i.userId === user.id)
+      setUserEquipmentInput(myItem ? myItem.itemName : '')
+    }
+  }
+
   async function refreshAll(userId?: number) {
     await Promise.all([
       refreshGame(userId),
@@ -488,6 +519,7 @@ function App() {
       refreshPlayersList(),
       refreshLotteryOverview(),
       refreshSnapshots(),
+      refreshEquipmentOverview(),
     ])
   }
 
@@ -692,6 +724,57 @@ function App() {
       setSuccess('המשחק נמחק.')
     } catch (requestError: unknown) {
       const errorMessage = requestError instanceof Error ? requestError.message : 'מחיקת משחק נכשלה.'
+      setError(errorMessage)
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
+  async function cleanupInactivePlayersByAdmin() {
+    if (!hasAdminSession) return
+
+    const confirmed = window.confirm('האם להסיר שחקנים שלא נרשמו לאף משחק מעל חודשיים?')
+    if (!confirmed) return
+
+    setError('')
+    setSuccess('')
+    setIsBusy(true)
+
+    try {
+      const response = await apiRequest<{ message: string }>('/api/admin/cleanup-inactive-players', {
+        method: 'POST',
+        body: JSON.stringify({ adminToken }),
+      })
+      await Promise.all([refreshAdminPlayers(), refreshPlayersList()])
+      setSuccess(response.message || 'הניקוי הושלם בהצלחה.')
+    } catch (requestError: unknown) {
+      const errorMessage = requestError instanceof Error ? requestError.message : 'ניקוי שחקנים נכשל.'
+      setError(errorMessage)
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
+  async function saveEquipment(event: FormEvent) {
+    event.preventDefault()
+    if (!user) return
+
+    setError('')
+    setSuccess('')
+    setIsBusy(true)
+
+    try {
+      const response = await apiRequest<{ message: string }>('/api/equipment/current', {
+        method: 'POST',
+        body: JSON.stringify({
+          userId: user.id,
+          itemName: userEquipmentInput,
+        }),
+      })
+      await refreshEquipmentOverview()
+      setSuccess(response.message || 'הציוד עודכן בהצלחה.')
+    } catch (requestError: unknown) {
+      const errorMessage = requestError instanceof Error ? requestError.message : 'עדכון הציוד נכשל.'
       setError(errorMessage)
     } finally {
       setIsBusy(false)
@@ -912,6 +995,13 @@ function App() {
                 </button>
                 <button
                   type="button"
+                  className={`tab-btn ${activeTab === 'equipment' ? 'tab-btn-active' : ''}`}
+                  onClick={() => setActiveTab('equipment')}
+                >
+                  ציוד מגיעים
+                </button>
+                <button
+                  type="button"
                   className={`tab-btn ${activeTab === 'rules' ? 'tab-btn-active' : ''}`}
                   onClick={() => setActiveTab('rules')}
                 >
@@ -1049,6 +1139,15 @@ function App() {
                     <p className="section-kicker">Player Management</p>
                     <h2>ניהול שחקנים פעילים</h2>
                   </div>
+                  <button
+                    type="button"
+                    disabled={isBusy}
+                    className="cta cta-danger"
+                    style={{ fontSize: '12px', padding: '6px 10px' }}
+                    onClick={cleanupInactivePlayersByAdmin}
+                  >
+                    הסר שחקנים לא פעילים (2 חודשים+)
+                  </button>
                 </div>
 
                 <form className="input-grid" onSubmit={createPlayerByAdmin}>
@@ -1227,6 +1326,9 @@ function App() {
                       <li key={player.registrationId}>
                         <span>
                           <strong>#{player.position}</strong> {player.name}
+                          <span style={{ fontSize: '12px', opacity: 0.8, marginRight: '6px' }}>
+                            ({player.appearancesCount ?? 0} הגעות)
+                          </span>
                         </span>
                         <span className={`tag ${player.role === 'PLAYING' ? 'tag-play' : 'tag-wait'}`}>
                           {player.role === 'PLAYING' ? 'משחק' : 'בחוץ בסבב'}
@@ -1240,6 +1342,70 @@ function App() {
               </article>
             ))}
               </>
+            )}
+
+            {activeTab === 'equipment' && (
+              <article className="card full-width info-card">
+                <div className="section-head">
+                  <div>
+                    <p className="section-kicker">Equipment Check</p>
+                    <h2>ציוד וציוד מלווה למגרש</h2>
+                  </div>
+                </div>
+
+                {equipmentOverview?.game ? (
+                  <p className="muted roster-meta">
+                    {equipmentOverview.game.title} | {formatGameDateTime(equipmentOverview.game.gameDate)}
+                  </p>
+                ) : (
+                  <p className="muted roster-meta">אין כרגע משחק מתוכנן.</p>
+                )}
+
+                {user ? (
+                  equipmentOverview?.canEdit ? (
+                    <form className="input-grid" onSubmit={saveEquipment} style={{ marginBottom: '20px' }}>
+                      <label style={{ fontSize: '14px', fontWeight: 'bold' }}>
+                        מה את/ה מביא/ה למגרש? (למשל: כדור, 2 כסאות, תאורה, ערכת עזרה ראשונה)
+                      </label>
+                      <input
+                        type="text"
+                        className="text-input"
+                        placeholder="רשום/י כאן מה מביא/ה (או השאר/י ריק להסרה)"
+                        value={userEquipmentInput}
+                        onChange={(e) => setUserEquipmentInput(e.target.value)}
+                      />
+                      <button disabled={isBusy} className="cta cta-primary" type="submit">
+                        שמירת ציוד
+                      </button>
+                    </form>
+                  ) : (
+                    <p className="card-note" style={{ marginBottom: '16px' }}>
+                      ההרשמה למשחק נסגרה, לא ניתן לערוך את ציוד המביאים כעת.
+                    </p>
+                  )
+                ) : (
+                  <p className="card-note" style={{ marginBottom: '16px' }}>
+                    יש להתחבר כשחקן כדי לעדכן ציוד.
+                  </p>
+                )}
+
+                <h3>רשימת ציוד מרוכזת:</h3>
+                {equipmentOverview?.items && equipmentOverview.items.length > 0 ? (
+                  <ul className="players players-grid" style={{ marginTop: '10px' }}>
+                    {equipmentOverview.items.map((item) => (
+                      <li key={item.id}>
+                        <span>
+                          <strong>{item.userName}</strong>: {item.itemName}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="muted" style={{ marginTop: '10px' }}>
+                    עדיין אף אחד לא רשם ציוד שהוא מביא למשחק הקרוב.
+                  </p>
+                )}
+              </article>
             )}
 
             {activeTab === 'rules' && (

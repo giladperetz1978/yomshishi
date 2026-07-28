@@ -536,6 +536,13 @@ function serializeGame(gameId, viewerUserId = null) {
     return null;
   }
 
+  // Calculate total appearances per user across all past/present locked/completed registrations
+  const appearanceCounts = new Map();
+  const appearances = all(`SELECT user_id, COUNT(*) as count FROM registrations GROUP BY user_id`);
+  appearances.forEach((row) => {
+    appearanceCounts.set(Number(row.user_id), Number(row.count));
+  });
+
   const players = all(
     `SELECT r.id AS registration_id,
             r.position,
@@ -556,6 +563,7 @@ function serializeGame(gameId, viewerUserId = null) {
     position: Number(row.position),
     role: row.role,
     joinedAt: row.joined_at,
+    appearancesCount: appearanceCounts.get(Number(row.user_id)) || 0,
   }));
 
   const viewerPlayer = viewerUserId
@@ -750,6 +758,18 @@ async function bootstrapDatabase() {
       player_list_json TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS equipment (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      game_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      item_name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(game_id, user_id),
+      FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
   `);
 
   ensureColumn('users', 'first_name', "TEXT NOT NULL DEFAULT ''");
@@ -856,16 +876,19 @@ async function startServer() {
     const dateStr = new Date(snapshot.game_date).toLocaleDateString('he-IL').replace(/\//g, '-');
     const fileName = `players_${dateStr}.txt`;
 
-    let content = `רשימת שחקנים - ${snapshot.game_title}\n`;
-    content += `תאריך משחק: ${new Date(snapshot.game_date).toLocaleString('he-IL')}\n`;
-    content += `-----------------------------------\n`;
+    let content = `רשימת שחקנים - ${snapshot.game_title}\r\n`;
+    content += `תאריך משחק: ${new Date(snapshot.game_date).toLocaleString('he-IL')}\r\n`;
+    content += `-----------------------------------\r\n`;
     players.forEach((p) => {
-      content += `${p.position}. ${p.name} - [${p.role}]\n`;
+      content += `${p.position}. ${p.name} - [${p.role}]\r\n`;
     });
+
+    const bom = Buffer.from([0xef, 0xbb, 0xbf]);
+    const bodyBuffer = Buffer.concat([bom, Buffer.from(content, 'utf8')]);
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
-    return res.send(content);
+    return res.send(bodyBuffer);
   });
 
   app.post('/api/auth/select-player', (req, res) => {
@@ -963,6 +986,34 @@ async function startServer() {
     run('UPDATE users SET is_active = 0, updated_at = ? WHERE id = ?', [nowIso(), playerId]);
     persistDb();
     return res.json({ ok: true });
+  });
+
+  app.post('/api/admin/cleanup-inactive-players', (req, res) => {
+    const requester = ensureAdmin(Number(req.body?.userId || 0), String(req.body?.adminToken || ''));
+    if (requester.error) {
+      return res.status(requester.error.status).json({ message: requester.error.message });
+    }
+
+    const twoMonthsAgo = new Date();
+    twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
+    const cutoffIso = twoMonthsAgo.toISOString();
+
+    const activeUsers = all('SELECT id, name, created_at FROM users WHERE is_active = 1');
+    let removedCount = 0;
+
+    activeUsers.forEach((u) => {
+      // Find latest registration date or user created_at date
+      const latestReg = get('SELECT MAX(joined_at) AS last_joined FROM registrations WHERE user_id = ?', [u.id]);
+      const lastActivity = latestReg && latestReg.last_joined ? latestReg.last_joined : u.created_at;
+
+      if (lastActivity < cutoffIso) {
+        run('UPDATE users SET is_active = 0, updated_at = ? WHERE id = ?', [nowIso(), u.id]);
+        removedCount += 1;
+      }
+    });
+
+    persistDb();
+    return res.json({ ok: true, removedCount, message: `הוסרו ${removedCount} שחקנים שלא נרשמו ב-2 החודשים האחרונים.` });
   });
 
   app.post('/api/admin/players/:playerId/password', (req, res) => {
@@ -1158,6 +1209,77 @@ async function startServer() {
     run('UPDATE games SET lottery_signature = ? WHERE id = ?', ['', gameId]);
     recalculateGame(gameId);
     return res.json({ game: serializeGame(gameId, requester.user.id) });
+  });
+
+  app.get('/api/equipment/current', (req, res) => {
+    const gameId = getUpcomingGameId();
+    if (!gameId) {
+      return res.json({ game: null, items: [] });
+    }
+
+    const items = all(
+      `SELECT e.id, e.game_id, e.user_id, e.item_name, e.updated_at, u.name as user_name
+       FROM equipment e
+       JOIN users u ON u.id = e.user_id
+       WHERE e.game_id = ?
+       ORDER BY e.updated_at DESC`,
+      [gameId]
+    ).map((row) => ({
+      id: Number(row.id),
+      gameId: Number(row.game_id),
+      userId: Number(row.user_id),
+      userName: row.user_name,
+      itemName: row.item_name,
+      updatedAt: row.updated_at,
+    }));
+
+    const currentGame = getGameRow(gameId);
+
+    return res.json({
+      game: currentGame ? { id: Number(currentGame.id), title: currentGame.title, gameDate: currentGame.game_date } : null,
+      items,
+      canEdit: currentGame ? isRegistrationOpen(currentGame.game_date) : false,
+    });
+  });
+
+  app.post('/api/equipment/current', (req, res) => {
+    const userId = Number(req.body?.userId);
+    const itemName = String(req.body?.itemName || '').trim();
+
+    const requester = getRequester(userId);
+    if (requester.error) {
+      return res.status(requester.error.status).json({ message: requester.error.message });
+    }
+
+    const gameId = getUpcomingGameId();
+    if (!gameId) {
+      return res.status(404).json({ message: 'אין כרגע משחק פעיל להוספת ציוד.' });
+    }
+
+    const currentGame = getGameRow(gameId);
+    if (!isRegistrationOpen(currentGame.game_date)) {
+      return res.status(409).json({ message: 'ההרשמה נסגרה, לא ניתן לשנות ציוד למשחק זה.' });
+    }
+
+    if (!itemName) {
+      // If empty name provided, delete user's equipment
+      run('DELETE FROM equipment WHERE game_id = ? AND user_id = ?', [gameId, requester.user.id]);
+      persistDb();
+      return res.json({ message: 'הציוד הוסר בהצלחה.' });
+    }
+
+    const existing = get('SELECT id FROM equipment WHERE game_id = ? AND user_id = ?', [gameId, requester.user.id]);
+    if (existing) {
+      run('UPDATE equipment SET item_name = ?, updated_at = ? WHERE id = ?', [itemName, nowIso(), existing.id]);
+    } else {
+      run(
+        'INSERT INTO equipment (game_id, user_id, item_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+        [gameId, requester.user.id, itemName, nowIso(), nowIso()]
+      );
+    }
+
+    persistDb();
+    return res.json({ message: 'הציוד עודכן בהצלחה.' });
   });
 
   if (fs.existsSync(FRONTEND_DIST_DIR)) {
