@@ -276,22 +276,6 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return payload as T
 }
 
-function GifSplash({ visible }: { visible: boolean }) {
-  if (!visible) return null
-
-  return (
-    <div className="intro-overlay intro-gif-overlay">
-      <div className="retro-arcade-cabinet">
-        <img 
-          src="/world-cup-kiss.gif" 
-          alt="World Cup Kiss" 
-          style={{ display: 'block', maxWidth: '100%', height: 'auto' }} 
-        />
-      </div>
-    </div>
-  )
-}
-
 function IntroSplash({ visible }: { visible: boolean }) {
   if (!visible) return null
 
@@ -392,7 +376,6 @@ function App() {
   const [isBusy, setIsBusy] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
-  const [showGif, setShowGif] = useState(true)
   const [showIntro, setShowIntro] = useState(false)
   const [gameForm, setGameForm] = useState<GameFormState>(() => createEmptyGameForm())
   const [isEditingGame, setIsEditingGame] = useState(false)
@@ -409,18 +392,13 @@ function App() {
   const hasAdminSession = Boolean(adminToken)
 
   useEffect(() => {
-    let introTimer: number | undefined
-    const gifTimer = window.setTimeout(() => {
-      setShowGif(false)
-      setShowIntro(true)
-      introTimer = window.setTimeout(() => {
-        setShowIntro(false)
-      }, 2200)
-    }, 2000)
+    setShowIntro(true)
+    const introTimer = window.setTimeout(() => {
+      setShowIntro(false)
+    }, 2200)
 
     return () => {
-      window.clearTimeout(gifTimer)
-      if (introTimer) window.clearTimeout(introTimer)
+      window.clearTimeout(introTimer)
     }
   }, [])
 
@@ -804,7 +782,6 @@ function App() {
 
   return (
     <main className="app-shell">
-      <GifSplash visible={showGif} />
       <IntroSplash visible={showIntro} />
 
       <section className="hero hero-sport">
