@@ -173,7 +173,7 @@ function composeDisplayName(firstName, lastName, fallback) {
 
 function getUserRow(userId) {
   return get(
-    'SELECT id, name, email, first_name, last_name, password_hash, profile_completed, is_active FROM users WHERE id = ?',
+    'SELECT id, name, email, first_name, last_name, password_hash, profile_completed, is_active, is_injured FROM users WHERE id = ?',
     [userId]
   );
 }
@@ -220,6 +220,7 @@ function serializeUser(user) {
     email: user.email,
     isAdmin: false,
     isActive: Number(user.is_active) === 1,
+    isInjured: Number(user.is_injured) === 1,
   };
 }
 
@@ -702,6 +703,7 @@ async function bootstrapDatabase() {
       password_hash TEXT,
       profile_completed INTEGER NOT NULL DEFAULT 1,
       is_active INTEGER NOT NULL DEFAULT 1,
+      is_injured INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -777,6 +779,7 @@ async function bootstrapDatabase() {
   ensureColumn('users', 'password_hash', 'TEXT');
   ensureColumn('users', 'profile_completed', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn('users', 'is_active', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn('users', 'is_injured', 'INTEGER NOT NULL DEFAULT 0');
 
   ensureColumn('games', 'title', "TEXT NOT NULL DEFAULT 'משחק שישי'");
   ensureColumn('games', 'location', "TEXT NOT NULL DEFAULT ''");
@@ -853,6 +856,38 @@ async function startServer() {
   app.get('/api/players/active', (_req, res) => {
     const players = getActivePlayerRows().map((user) => ({ id: Number(user.id), name: user.name }));
     return res.json({ players });
+  });
+
+  app.get('/api/players/injured', (_req, res) => {
+    const players = all(
+      `SELECT id, name
+       FROM users
+       WHERE is_active = 1 AND is_injured = 1
+       ORDER BY name COLLATE NOCASE ASC, id ASC`
+    ).map((player) => ({ id: Number(player.id), name: player.name }));
+
+    return res.json({ players });
+  });
+
+  app.patch('/api/users/:userId/injury', (req, res) => {
+    const userId = Number(req.params.userId);
+    const requester = getRequester(userId);
+    if (requester.error) {
+      return res.status(requester.error.status).json({ message: requester.error.message });
+    }
+
+    if (typeof req.body?.isInjured !== 'boolean') {
+      return res.status(400).json({ message: 'יש לבחור האם לסמן את השחקן כפצוע.' });
+    }
+
+    run('UPDATE users SET is_injured = ?, updated_at = ? WHERE id = ?', [
+      req.body.isInjured ? 1 : 0,
+      nowIso(),
+      userId,
+    ]);
+    persistDb();
+
+    return res.json({ user: serializeUser(getUserRow(userId)) });
   });
 
   app.get('/api/lottery/overview', (_req, res) => {
@@ -1042,6 +1077,41 @@ async function startServer() {
     run('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?', [passwordHash, nowIso(), playerId]);
     persistDb();
     return res.json({ ok: true });
+  });
+
+  app.patch('/api/admin/players/:playerId/lottery-stats', (req, res) => {
+    const requester = ensureAdmin(Number(req.body?.userId || 0), String(req.body?.adminToken || ''));
+    if (requester.error) {
+      return res.status(requester.error.status).json({ message: requester.error.message });
+    }
+
+    const playerId = Number(req.params.playerId);
+    const benchCount = Number(req.body?.benchCount);
+    if (!Number.isInteger(playerId) || playerId <= 0) {
+      return res.status(400).json({ message: 'מזהה שחקן לא תקין.' });
+    }
+
+    if (!Number.isInteger(benchCount) || benchCount < 0) {
+      return res.status(400).json({ message: 'כמות ההגרלות חייבת להיות מספר שלם שאינו שלילי.' });
+    }
+
+    const existingPlayer = get('SELECT id FROM users WHERE id = ?', [playerId]);
+    if (!existingPlayer) {
+      return res.status(404).json({ message: 'השחקן לא נמצא.' });
+    }
+
+    const existingStats = get('SELECT user_id FROM lottery_stats WHERE user_id = ?', [playerId]);
+    if (existingStats) {
+      run('UPDATE lottery_stats SET bench_count = ?, updated_at = ? WHERE user_id = ?', [benchCount, nowIso(), playerId]);
+    } else {
+      run(
+        'INSERT INTO lottery_stats (user_id, bench_count, created_at, updated_at) VALUES (?, ?, ?, ?)',
+        [playerId, benchCount, nowIso(), nowIso()]
+      );
+    }
+
+    persistDb();
+    return res.json({ ok: true, benchCount });
   });
 
   app.get('/api/games/current', (req, res) => {

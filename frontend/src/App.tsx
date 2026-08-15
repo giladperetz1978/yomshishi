@@ -13,6 +13,7 @@ type User = {
   email: string
   isAdmin: boolean
   isActive?: boolean
+  isInjured?: boolean
 }
 
 type PlayerOption = {
@@ -82,7 +83,12 @@ type GameFormState = {
   gameDate: string
 }
 
-type AppTab = 'main' | 'equipment' | 'rules' | 'lottery' | 'snapshots'
+type AppTab = 'main' | 'equipment' | 'rules' | 'lottery' | 'snapshots' | 'injured'
+
+type InjuredPlayer = {
+  id: number
+  name: string
+}
 
 type EquipmentItem = {
   id: number
@@ -406,9 +412,11 @@ function App() {
   const [authTab, setAuthTab] = useState<'player' | 'admin'>('player')
   const [activeTab, setActiveTab] = useState<AppTab>('main')
   const [lotteryOverview, setLotteryOverview] = useState<LotteryOverviewResponse | null>(null)
+  const [lotteryBenchInputs, setLotteryBenchInputs] = useState<Record<number, string>>({})
   const [snapshots, setSnapshots] = useState<Snapshot[]>([])
   const [equipmentOverview, setEquipmentOverview] = useState<EquipmentOverviewResponse | null>(null)
   const [userEquipmentInput, setUserEquipmentInput] = useState('')
+  const [injuredPlayers, setInjuredPlayers] = useState<InjuredPlayer[]>([])
 
   const registeredUserId = useMemo(() => readStoredUserId(), [])
   const hasAdminSession = Boolean(adminToken)
@@ -496,6 +504,15 @@ function App() {
   async function refreshLotteryOverview() {
     const response = await apiRequest<LotteryOverviewResponse>('/api/lottery/overview')
     setLotteryOverview(response)
+    setLotteryBenchInputs((current) => {
+      const next = { ...current }
+      response.players.forEach((player) => {
+        if (next[player.id] === undefined) {
+          next[player.id] = String(player.benchCount)
+        }
+      })
+      return next
+    })
   }
 
   async function refreshSnapshots() {
@@ -512,6 +529,11 @@ function App() {
     }
   }
 
+  async function refreshInjuredPlayers() {
+    const response = await apiRequest<{ players: InjuredPlayer[] }>('/api/players/injured')
+    setInjuredPlayers(response.players || [])
+  }
+
   async function refreshAll(userId?: number) {
     await Promise.all([
       refreshGame(userId),
@@ -520,6 +542,7 @@ function App() {
       refreshLotteryOverview(),
       refreshSnapshots(),
       refreshEquipmentOverview(),
+      refreshInjuredPlayers(),
     ])
   }
 
@@ -781,6 +804,30 @@ function App() {
     }
   }
 
+  async function toggleInjury() {
+    if (!user) return
+
+    setError('')
+    setSuccess('')
+    setIsBusy(true)
+
+    try {
+      const isInjured = !user.isInjured
+      const response = await apiRequest<{ user: User }>(`/api/users/${user.id}/injury`, {
+        method: 'PATCH',
+        body: JSON.stringify({ isInjured }),
+      })
+      setUser(response.user)
+      await refreshInjuredPlayers()
+      setSuccess(isInjured ? 'סומנת כשחקן פצוע.' : 'הסימון שלך כפצוע הוסר.')
+    } catch (requestError: unknown) {
+      const errorMessage = requestError instanceof Error ? requestError.message : 'עדכון מצב הפציעה נכשל.'
+      setError(errorMessage)
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
   async function createPlayerByAdmin(event: FormEvent) {
     event.preventDefault()
     if (!hasAdminSession) return
@@ -839,6 +886,28 @@ function App() {
       setSuccess('סיסמת השחקן עודכנה.')
     } catch (requestError: unknown) {
       const errorMessage = requestError instanceof Error ? requestError.message : 'עדכון סיסמה נכשל.'
+      setError(errorMessage)
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
+  async function setLotteryBenchCountByAdmin(playerId: number, benchCount: number) {
+    if (!hasAdminSession || !Number.isInteger(benchCount) || benchCount < 0) return
+
+    setError('')
+    setSuccess('')
+    setIsBusy(true)
+    try {
+      await apiRequest<{ ok: boolean; benchCount: number }>(`/api/admin/players/${playerId}/lottery-stats`, {
+        method: 'PATCH',
+        body: JSON.stringify({ adminToken, benchCount }),
+      })
+      setLotteryBenchInputs((current) => ({ ...current, [playerId]: String(benchCount) }))
+      await refreshLotteryOverview()
+      setSuccess(benchCount === 0 ? 'מונה ההגרלות אופס.' : 'מונה ההגרלות עודכן.')
+    } catch (requestError: unknown) {
+      const errorMessage = requestError instanceof Error ? requestError.message : 'עדכון מונה ההגרלות נכשל.'
       setError(errorMessage)
     } finally {
       setIsBusy(false)
@@ -1020,6 +1089,13 @@ function App() {
                   onClick={() => setActiveTab('snapshots')}
                 >
                   רשימות שחקנים
+                </button>
+                <button
+                  type="button"
+                  className={`tab-btn ${activeTab === 'injured' ? 'tab-btn-active' : ''}`}
+                  onClick={() => setActiveTab('injured')}
+                >
+                  שחקנים פצועים
                 </button>
               </div>
             </article>
@@ -1464,6 +1540,43 @@ function App() {
                             ? 'משחק בסבב הנוכחי'
                             : 'לא רשום למשחק הנוכחי'}
                       </span>
+                      {hasAdminSession && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                          <input
+                            type="number"
+                            min="0"
+                            aria-label={`כמות הגרלות של ${player.name}`}
+                            value={lotteryBenchInputs[player.id] ?? String(player.benchCount)}
+                            onChange={(event) =>
+                              setLotteryBenchInputs((current) => ({
+                                ...current,
+                                [player.id]: event.target.value,
+                              }))
+                            }
+                            style={{ width: '78px', padding: '6px', border: '3px solid #000' }}
+                          />
+                          <button
+                            type="button"
+                            disabled={isBusy || !/^\d+$/.test(lotteryBenchInputs[player.id] ?? String(player.benchCount))}
+                            className="cta cta-secondary"
+                            style={{ padding: '7px 10px', fontSize: '11px' }}
+                            onClick={() =>
+                              setLotteryBenchCountByAdmin(player.id, Number(lotteryBenchInputs[player.id] ?? player.benchCount))
+                            }
+                          >
+                            שמור
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isBusy || player.benchCount === 0}
+                            className="cta cta-danger"
+                            style={{ padding: '7px 10px', fontSize: '11px' }}
+                            onClick={() => setLotteryBenchCountByAdmin(player.id, 0)}
+                          >
+                            איפוס
+                          </button>
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -1501,6 +1614,47 @@ function App() {
                   </ul>
                 )}
                 <p className="card-note" style={{ marginTop: '16px' }}>הרשימות נשמרות למשך שבוע בלבד מרגע נעילת המשחק.</p>
+              </article>
+            )}
+
+            {activeTab === 'injured' && (
+              <article className="card full-width info-card">
+                <div className="section-head">
+                  <div>
+                    <p className="section-kicker">Injury Report</p>
+                    <h2>שחקנים פצועים</h2>
+                  </div>
+                  <span className="status-badge status-WAITING">{injuredPlayers.length} מסומנים</span>
+                </div>
+
+                {user && (
+                  <div className="card-note" style={{ marginBottom: '18px' }}>
+                    <p style={{ margin: '0 0 12px' }}>
+                      אם נפצעת, סמן/י את עצמך כאן כדי שהקבוצה תדע.
+                    </p>
+                    <button
+                      type="button"
+                      disabled={isBusy}
+                      className={`cta ${user.isInjured ? 'cta-danger' : 'cta-primary'}`}
+                      onClick={toggleInjury}
+                    >
+                      {user.isInjured ? 'הסר סימון פציעה' : 'סמן/י אותי כפצוע/ה'}
+                    </button>
+                  </div>
+                )}
+
+                {injuredPlayers.length > 0 ? (
+                  <ul className="players players-grid">
+                    {injuredPlayers.map((player) => (
+                      <li key={player.id}>
+                        <strong>{player.name}</strong>
+                        <span className="tag tag-wait">פצוע/ה</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="muted">כרגע אין שחקנים שמסומנים כפצועים.</p>
+                )}
               </article>
             )}
           </>
