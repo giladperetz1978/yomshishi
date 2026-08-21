@@ -14,6 +14,7 @@ type User = {
   isAdmin: boolean
   isActive?: boolean
   isInjured?: boolean
+  injuryUntil?: string | null
 }
 
 type PlayerOption = {
@@ -60,6 +61,7 @@ type Game = {
   isRegistrationClosed: boolean
   reminderDueAt: string
   reminderSentAt: string | null
+  injuredPlayers: InjuredPlayer[]
 }
 
 type ApiConfig = {
@@ -88,6 +90,7 @@ type AppTab = 'main' | 'equipment' | 'rules' | 'lottery' | 'snapshots' | 'injure
 type InjuredPlayer = {
   id: number
   name: string
+  injuryUntil: string
 }
 
 type EquipmentItem = {
@@ -251,6 +254,14 @@ function formatGameDate(value: string): string {
     month: '2-digit',
     day: '2-digit',
   })
+}
+
+function toDateInputValue(value: string | null | undefined): string {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const localValue = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+  return localValue.toISOString().slice(0, 10)
 }
 
 function gameToForm(game: Game): GameFormState {
@@ -417,9 +428,14 @@ function App() {
   const [equipmentOverview, setEquipmentOverview] = useState<EquipmentOverviewResponse | null>(null)
   const [userEquipmentInput, setUserEquipmentInput] = useState('')
   const [injuredPlayers, setInjuredPlayers] = useState<InjuredPlayer[]>([])
+  const [injuryUntilInput, setInjuryUntilInput] = useState('')
 
   const registeredUserId = useMemo(() => readStoredUserId(), [])
   const hasAdminSession = Boolean(adminToken)
+
+  useEffect(() => {
+    setInjuryUntilInput(toDateInputValue(user?.injuryUntil))
+  }, [user?.injuryUntil])
 
   useEffect(() => {
     setShowIntro(true)
@@ -804,7 +820,7 @@ function App() {
     }
   }
 
-  async function toggleInjury() {
+  async function updateInjury(isInjured: boolean) {
     if (!user) return
 
     setError('')
@@ -812,14 +828,20 @@ function App() {
     setIsBusy(true)
 
     try {
-      const isInjured = !user.isInjured
+      if (isInjured && !injuryUntilInput) {
+        setError('יש לבחור תאריך אחרון לסיום הפציעה.')
+        return
+      }
       const response = await apiRequest<{ user: User }>(`/api/users/${user.id}/injury`, {
         method: 'PATCH',
-        body: JSON.stringify({ isInjured }),
+        body: JSON.stringify({
+          isInjured,
+          injuryUntil: isInjured ? new Date(`${injuryUntilInput}T23:59:59`).toISOString() : null,
+        }),
       })
       setUser(response.user)
       await refreshInjuredPlayers()
-      setSuccess(isInjured ? 'סומנת כשחקן פצוע.' : 'הסימון שלך כפצוע הוסר.')
+      setSuccess(isInjured ? 'סומנת כשחקן פצוע ותאריך הסיום נשמר.' : 'הסימון שלך כפצוע הוסר.')
     } catch (requestError: unknown) {
       const errorMessage = requestError instanceof Error ? requestError.message : 'עדכון מצב הפציעה נכשל.'
       setError(errorMessage)
@@ -1415,6 +1437,19 @@ function App() {
                     <li className="muted">עדיין אין נרשמים למשחק הזה.</li>
                   )}
                 </ul>
+                <h3 style={{ marginTop: '20px' }}>שחקנים פצועים</h3>
+                {rosterGame.injuredPlayers.length > 0 ? (
+                  <ul className="players players-grid">
+                    {rosterGame.injuredPlayers.map((player) => (
+                      <li key={player.id}>
+                        <strong>{player.name}</strong>
+                        <span className="tag tag-wait">פצוע/ה עד {formatGameDate(player.injuryUntil)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="muted">אין כרגע שחקנים פצועים.</p>
+                )}
               </article>
             ))}
               </>
@@ -1630,16 +1665,34 @@ function App() {
                 {user && (
                   <div className="card-note" style={{ marginBottom: '18px' }}>
                     <p style={{ margin: '0 0 12px' }}>
-                      אם נפצעת, סמן/י את עצמך כאן כדי שהקבוצה תדע.
+                      אם נפצעת, סמן/י את עצמך כאן ובחר/י את התאריך האחרון של הפציעה.
                     </p>
+                    <input
+                      type="date"
+                      min={new Date().toISOString().slice(0, 10)}
+                      value={injuryUntilInput}
+                      onChange={(event) => setInjuryUntilInput(event.target.value)}
+                      style={{ marginBottom: '12px' }}
+                    />
                     <button
                       type="button"
                       disabled={isBusy}
                       className={`cta ${user.isInjured ? 'cta-danger' : 'cta-primary'}`}
-                      onClick={toggleInjury}
+                      onClick={() => updateInjury(true)}
                     >
-                      {user.isInjured ? 'הסר סימון פציעה' : 'סמן/י אותי כפצוע/ה'}
+                      {user.isInjured ? 'שמירת תאריך סיום / הארכת פציעה' : 'סמן/י אותי כפצוע/ה'}
                     </button>
+                    {user.isInjured && (
+                      <button
+                        type="button"
+                        disabled={isBusy}
+                        className="cta cta-soft"
+                        onClick={() => updateInjury(false)}
+                        style={{ marginRight: '8px' }}
+                      >
+                        הסרת סימון פציעה
+                      </button>
+                    )}
                   </div>
                 )}
 
@@ -1648,7 +1701,7 @@ function App() {
                     {injuredPlayers.map((player) => (
                       <li key={player.id}>
                         <strong>{player.name}</strong>
-                        <span className="tag tag-wait">פצוע/ה</span>
+                        <span className="tag tag-wait">פצוע/ה עד {formatGameDate(player.injuryUntil)}</span>
                       </li>
                     ))}
                   </ul>

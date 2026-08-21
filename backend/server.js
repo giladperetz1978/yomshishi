@@ -173,7 +173,7 @@ function composeDisplayName(firstName, lastName, fallback) {
 
 function getUserRow(userId) {
   return get(
-    'SELECT id, name, email, first_name, last_name, password_hash, profile_completed, is_active, is_injured FROM users WHERE id = ?',
+    'SELECT id, name, email, first_name, last_name, password_hash, profile_completed, is_active, is_injured, injury_until FROM users WHERE id = ?',
     [userId]
   );
 }
@@ -185,6 +185,20 @@ function getActivePlayerRows() {
      WHERE is_active = 1
      ORDER BY name COLLATE NOCASE ASC, id ASC`
   );
+}
+
+function getActiveInjuredPlayers() {
+  return all(
+    `SELECT id, name, injury_until
+     FROM users
+     WHERE is_active = 1 AND is_injured = 1 AND injury_until > ?
+     ORDER BY name COLLATE NOCASE ASC, id ASC`,
+    [nowIso()]
+  ).map((player) => ({
+    id: Number(player.id),
+    name: player.name,
+    injuryUntil: player.injury_until,
+  }));
 }
 
 function createLocalEmailForPlayer() {
@@ -221,6 +235,7 @@ function serializeUser(user) {
     isAdmin: false,
     isActive: Number(user.is_active) === 1,
     isInjured: Number(user.is_injured) === 1,
+    injuryUntil: user.injury_until || null,
   };
 }
 
@@ -495,6 +510,33 @@ function recalculateLockedGames() {
   cleanupOldSnapshots();
 }
 
+function cleanupInactivePlayers() {
+  const currentTime = nowIso();
+  run('UPDATE users SET is_injured = 0, injury_until = NULL, updated_at = ? WHERE is_injured = 1 AND injury_until <= ?', [
+    currentTime,
+    currentTime,
+  ]);
+
+  const twoMonthsAgo = new Date();
+  twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
+  const cutoffIso = twoMonthsAgo.toISOString();
+  const activeUsers = all('SELECT id, created_at FROM users WHERE is_active = 1 AND is_injured = 0');
+  let removedCount = 0;
+
+  activeUsers.forEach((user) => {
+    const latestRegistration = get('SELECT MAX(joined_at) AS last_joined FROM registrations WHERE user_id = ?', [user.id]);
+    const lastActivity = latestRegistration?.last_joined || user.created_at;
+    if (lastActivity < cutoffIso) {
+      run('UPDATE users SET is_active = 0, updated_at = ? WHERE id = ?', [currentTime, user.id]);
+      removedCount += 1;
+    }
+  });
+
+  if (removedCount > 0) {
+    persistDb();
+  }
+}
+
 function createGameSnapshot(gameId) {
   // Only create one snapshot per game
   const existing = get('SELECT id FROM snapshots WHERE game_id = ?', [gameId]);
@@ -592,6 +634,7 @@ function serializeGame(gameId, viewerUserId = null) {
     isRegistrationClosed: !isRegistrationOpen(game.game_date),
     reminderDueAt: registrationDeadlineIso(game.game_date),
     reminderSentAt: null,
+    injuredPlayers: getActiveInjuredPlayers(),
     createdAt: game.created_at,
     updatedAt: game.updated_at,
   };
@@ -780,12 +823,15 @@ async function bootstrapDatabase() {
   ensureColumn('users', 'profile_completed', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn('users', 'is_active', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn('users', 'is_injured', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('users', 'injury_until', 'TEXT');
 
   ensureColumn('games', 'title', "TEXT NOT NULL DEFAULT 'משחק שישי'");
   ensureColumn('games', 'location', "TEXT NOT NULL DEFAULT ''");
   ensureColumn('games', 'notes', "TEXT NOT NULL DEFAULT ''");
   ensureColumn('games', 'created_by_user_id', 'INTEGER');
   ensureColumn('games', 'lottery_signature', "TEXT NOT NULL DEFAULT ''");
+
+  cleanupInactivePlayers();
 
   const games = all('SELECT id FROM games');
   games.forEach((game) => {
@@ -859,14 +905,7 @@ async function startServer() {
   });
 
   app.get('/api/players/injured', (_req, res) => {
-    const players = all(
-      `SELECT id, name
-       FROM users
-       WHERE is_active = 1 AND is_injured = 1
-       ORDER BY name COLLATE NOCASE ASC, id ASC`
-    ).map((player) => ({ id: Number(player.id), name: player.name }));
-
-    return res.json({ players });
+    return res.json({ players: getActiveInjuredPlayers() });
   });
 
   app.patch('/api/users/:userId/injury', (req, res) => {
@@ -880,8 +919,14 @@ async function startServer() {
       return res.status(400).json({ message: 'יש לבחור האם לסמן את השחקן כפצוע.' });
     }
 
-    run('UPDATE users SET is_injured = ?, updated_at = ? WHERE id = ?', [
+    const injuryUntil = req.body.isInjured ? parseDate(req.body?.injuryUntil) : null;
+    if (req.body.isInjured && (!injuryUntil || injuryUntil.getTime() <= Date.now())) {
+      return res.status(400).json({ message: 'יש לבחור תאריך עתידי לסיום הפציעה.' });
+    }
+
+    run('UPDATE users SET is_injured = ?, injury_until = ?, updated_at = ? WHERE id = ?', [
       req.body.isInjured ? 1 : 0,
+      injuryUntil ? injuryUntil.toISOString() : null,
       nowIso(),
       userId,
     ]);
@@ -1029,25 +1074,10 @@ async function startServer() {
       return res.status(requester.error.status).json({ message: requester.error.message });
     }
 
-    const twoMonthsAgo = new Date();
-    twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
-    const cutoffIso = twoMonthsAgo.toISOString();
-
-    const activeUsers = all('SELECT id, name, created_at FROM users WHERE is_active = 1');
-    let removedCount = 0;
-
-    activeUsers.forEach((u) => {
-      // Find latest registration date or user created_at date
-      const latestReg = get('SELECT MAX(joined_at) AS last_joined FROM registrations WHERE user_id = ?', [u.id]);
-      const lastActivity = latestReg && latestReg.last_joined ? latestReg.last_joined : u.created_at;
-
-      if (lastActivity < cutoffIso) {
-        run('UPDATE users SET is_active = 0, updated_at = ? WHERE id = ?', [nowIso(), u.id]);
-        removedCount += 1;
-      }
-    });
-
-    persistDb();
+    const beforeCount = all('SELECT id FROM users WHERE is_active = 1').length;
+    cleanupInactivePlayers();
+    const afterCount = all('SELECT id FROM users WHERE is_active = 1').length;
+    const removedCount = beforeCount - afterCount;
     return res.json({ ok: true, removedCount, message: `הוסרו ${removedCount} שחקנים שלא נרשמו ב-2 החודשים האחרונים.` });
   });
 
@@ -1372,8 +1402,10 @@ async function startServer() {
   });
 
   recalculateLockedGames();
+  cleanupInactivePlayers();
   setInterval(() => {
     recalculateLockedGames();
+    cleanupInactivePlayers();
   }, 60000);
 
   app.listen(PORT, () => {

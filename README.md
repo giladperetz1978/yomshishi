@@ -22,6 +22,9 @@ Closed-group app for managing Friday 3v3 basketball games with manual game creat
 - WAITING: 10-11 players (positions 10-11 in waiting list)
 - LOCKED: 12 players (all must attend)
 - On drop from 12 to 11, positions 10-11 return to waiting.
+- Active players who have not registered for a game for two consecutive months are automatically deactivated by the server.
+- An injury status exempts a player from inactivity cleanup until the selected injury end date. The end date can be extended from the injury screen.
+- Active injured players and their injury end dates are displayed alongside each game roster.
 
 ## Local Run (No Admin Required)
 
