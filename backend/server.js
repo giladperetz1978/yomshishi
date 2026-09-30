@@ -24,13 +24,16 @@ const FRONTEND_ORIGINS = Array.from(
       .concat(DEFAULT_LOCAL_ORIGINS)
   )
 );
-const DB_DIR = path.join(__dirname, 'data');
-const DB_FILE = path.join(DB_DIR, 'yomshishi.sqlite');
+const DB_FILE = process.env.DATABASE_FILE
+  ? path.resolve(process.env.DATABASE_FILE)
+  : path.join(__dirname, 'data', 'yomshishi.sqlite');
+const DB_DIR = path.dirname(DB_FILE);
 const FRONTEND_DIST_DIR = path.join(__dirname, '..', 'frontend', 'dist');
 const ADMIN_USERNAME = String(process.env.ADMIN_USERNAME || 'gilad').trim();
 const ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || 'liga').trim();
 const ADMIN_TOKEN_TTL_MS = 1000 * 60 * 60 * 12;
-const REGISTRATION_LOCK_HOUR = Number(process.env.REGISTRATION_LOCK_HOUR || 20);
+const LOTTERY_HOUR = 21;
+const GAME_TIME_ZONE = 'Asia/Jerusalem';
 const MAX_ACTIVE_GAMES = 2;
 
 let db;
@@ -75,22 +78,59 @@ function parseDate(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function registrationDeadlineIso(gameDate) {
-  const game = new Date(gameDate);
-  const deadline = new Date(game);
-  deadline.setDate(deadline.getDate() - 1);
-  deadline.setHours(REGISTRATION_LOCK_HOUR, 0, 0, 0);
-  return deadline.toISOString();
+function lotteryAtIso(gameDate) {
+  const dateParts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: GAME_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(gameDate));
+  const valueOf = (parts, type) => Number(parts.find((part) => part.type === type)?.value);
+  const previousDay = new Date(Date.UTC(
+    valueOf(dateParts, 'year'),
+    valueOf(dateParts, 'month') - 1,
+    valueOf(dateParts, 'day') - 1
+  ));
+  const targetUtc = Date.UTC(
+    previousDay.getUTCFullYear(),
+    previousDay.getUTCMonth(),
+    previousDay.getUTCDate(),
+    LOTTERY_HOUR
+  );
+  let resolvedUtc = targetUtc;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const localParts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: GAME_TIME_ZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date(resolvedUtc));
+    const displayedAsUtc = Date.UTC(
+      valueOf(localParts, 'year'),
+      valueOf(localParts, 'month') - 1,
+      valueOf(localParts, 'day'),
+      valueOf(localParts, 'hour'),
+      valueOf(localParts, 'minute'),
+      valueOf(localParts, 'second')
+    );
+    resolvedUtc += targetUtc - displayedAsUtc;
+  }
+
+  return new Date(resolvedUtc).toISOString();
 }
 
-function isRegistrationOpen(gameDate) {
-  return Date.now() < new Date(registrationDeadlineIso(gameDate)).getTime();
+function isLotteryDue(gameDate) {
+  return Date.now() >= new Date(lotteryAtIso(gameDate)).getTime();
 }
 
-function gameStatusByCount(totalPlayers, cancelled) {
+function gameStatusByCount(totalPlayers, cancelled, benchCount = 0) {
   if (cancelled) return 'CANCELLED';
-  if (totalPlayers >= 13 || totalPlayers === 10 || totalPlayers === 11) return 'WAITING';
-  if (totalPlayers === 12) return 'LOCKED';
+  if (benchCount > 0) return 'WAITING';
   if (totalPlayers >= 6) return 'CONFIRMED';
   return 'OPEN';
 }
@@ -173,9 +213,20 @@ function composeDisplayName(firstName, lastName, fallback) {
 
 function getUserRow(userId) {
   return get(
-    'SELECT id, name, email, first_name, last_name, password_hash, profile_completed, is_active, is_injured, injury_until FROM users WHERE id = ?',
+    'SELECT id, name, email, first_name, last_name, password_hash, profile_completed, profile_email, phone, profile_info, profile_image, is_active, is_injured, injury_until FROM users WHERE id = ?',
     [userId]
   );
+}
+
+function serializePlayerProfile(player) {
+  return {
+    id: Number(player.id),
+    name: composeDisplayName(player.first_name, player.last_name, player.name),
+    profileEmail: player.profile_email || '',
+    phone: player.phone || '',
+    profileInfo: player.profile_info || '',
+    profileImage: player.profile_image || '',
+  };
 }
 
 function getActivePlayerRows() {
@@ -232,6 +283,10 @@ function serializeUser(user) {
     lastName,
     profileCompleted: Number(user.profile_completed) === 1,
     email: user.email,
+    profileEmail: user.profile_email || '',
+    phone: user.phone || '',
+    profileInfo: user.profile_info || '',
+    profileImage: user.profile_image || '',
     isAdmin: false,
     isActive: Number(user.is_active) === 1,
     isInjured: Number(user.is_injured) === 1,
@@ -348,7 +403,7 @@ function shuffle(array) {
   return items;
 }
 
-function pickBenchedUsersByRotation(candidateUserIds, benchCount) {
+function pickBenchedUsersByRotation(candidateUserIds, benchCount, forcedUserIds = []) {
   if (!candidateUserIds.length || benchCount <= 0) {
     return [];
   }
@@ -359,8 +414,8 @@ function pickBenchedUsersByRotation(candidateUserIds, benchCount) {
     stats.set(userId, row ? Number(row.bench_count) : 0);
   });
 
-  const picked = [];
-  const pool = [...candidateUserIds];
+  const picked = [...new Set(forcedUserIds)].slice(0, benchCount);
+  const pool = candidateUserIds.filter((userId) => !picked.includes(userId));
 
   while (picked.length < benchCount && pool.length > 0) {
     let minBench = Number.MAX_SAFE_INTEGER;
@@ -401,27 +456,24 @@ function pickBenchedUsersByRotation(candidateUserIds, benchCount) {
   return picked;
 }
 
-function resolveLottery(registrations, shouldRunLottery) {
+function resolveLottery(registrations, shouldRunLottery, lotteryAt) {
   if (!shouldRunLottery) {
-    return { benchCount: 0, candidateUserIds: [] };
+    return { benchCount: 0, candidateUserIds: [], forcedUserIds: [] };
   }
 
   const totalPlayers = registrations.length;
   if (totalPlayers <= 9 || totalPlayers === 12) {
-    return { benchCount: 0, candidateUserIds: [] };
+    return { benchCount: 0, candidateUserIds: [], forcedUserIds: [] };
   }
 
-  if (totalPlayers === 10) {
+  if (totalPlayers <= 11) {
     return {
-      benchCount: 1,
+      benchCount: totalPlayers - 9,
       candidateUserIds: registrations.map((item) => Number(item.user_id)),
-    };
-  }
-
-  if (totalPlayers === 11) {
-    return {
-      benchCount: 2,
-      candidateUserIds: registrations.map((item) => Number(item.user_id)),
+      forcedUserIds: registrations
+        .filter((item) => new Date(item.joined_at).getTime() >= new Date(lotteryAt).getTime())
+        .sort((left, right) => new Date(right.joined_at).getTime() - new Date(left.joined_at).getTime())
+        .map((item) => Number(item.user_id)),
     };
   }
 
@@ -429,6 +481,7 @@ function resolveLottery(registrations, shouldRunLottery) {
   return {
     benchCount: totalPlayers - 12,
     candidateUserIds: extras.map((item) => Number(item.user_id)),
+    forcedUserIds: extras.map((item) => Number(item.user_id)),
   };
 }
 
@@ -439,7 +492,7 @@ function recalculateGame(gameId) {
   }
 
   const registrations = all(
-    `SELECT id, user_id, position
+    `SELECT id, user_id, position, joined_at
      FROM registrations
      WHERE game_id = ?
      ORDER BY position ASC, joined_at ASC, id ASC`,
@@ -448,9 +501,10 @@ function recalculateGame(gameId) {
 
   const totalPlayers = registrations.length;
   const isCancelled = Number(game.is_cancelled) === 1;
-  const shouldRunLottery = !isRegistrationOpen(game.game_date);
-  const lotteryPlan = resolveLottery(registrations, shouldRunLottery);
-  const signature = `${registrations.map((item) => Number(item.user_id)).join(',')}|${lotteryPlan.benchCount}|${lotteryPlan.candidateUserIds.join(',')}`;
+  const lotteryAt = lotteryAtIso(game.game_date);
+  const shouldRunLottery = isLotteryDue(game.game_date);
+  const lotteryPlan = resolveLottery(registrations, shouldRunLottery, lotteryAt);
+  const signature = `${registrations.map((item) => Number(item.user_id)).join(',')}|${lotteryPlan.benchCount}|${lotteryPlan.candidateUserIds.join(',')}|${lotteryPlan.forcedUserIds.join(',')}`;
 
   let benchedUserIds = [];
 
@@ -462,12 +516,17 @@ function recalculateGame(gameId) {
     const canReuseExisting =
       String(game.lottery_signature || '') === signature &&
       existing.length === lotteryPlan.benchCount &&
-      existing.every((userId) => lotteryPlan.candidateUserIds.includes(userId));
+      existing.every((userId) => lotteryPlan.candidateUserIds.includes(userId)) &&
+      lotteryPlan.forcedUserIds.every((userId) => existing.includes(userId));
 
     if (canReuseExisting) {
       benchedUserIds = existing;
     } else {
-      benchedUserIds = pickBenchedUsersByRotation(lotteryPlan.candidateUserIds, lotteryPlan.benchCount);
+      benchedUserIds = pickBenchedUsersByRotation(
+        lotteryPlan.candidateUserIds,
+        lotteryPlan.benchCount,
+        lotteryPlan.forcedUserIds
+      );
       run('DELETE FROM game_lottery WHERE game_id = ?', [gameId]);
       benchedUserIds.forEach((userId) => {
         run('INSERT INTO game_lottery (game_id, user_id, created_at) VALUES (?, ?, ?)', [gameId, userId, nowIso()]);
@@ -487,13 +546,13 @@ function recalculateGame(gameId) {
     `UPDATE games
      SET status = ?, lottery_signature = ?, updated_at = ?
      WHERE id = ?`,
-    [gameStatusByCount(totalPlayers, isCancelled), lotteryPlan.benchCount > 0 ? signature : '', nowIso(), gameId]
+    [gameStatusByCount(totalPlayers, isCancelled, lotteryPlan.benchCount), lotteryPlan.benchCount > 0 ? signature : '', nowIso(), gameId]
   );
 
   persistDb();
 }
 
-function recalculateLockedGames() {
+function processScheduledGames() {
   const gameIds = getUpcomingGameIds(MAX_ACTIVE_GAMES);
   gameIds.forEach((gameId) => {
     const game = getGameRow(gameId);
@@ -501,7 +560,7 @@ function recalculateLockedGames() {
       return;
     }
 
-    if (!isRegistrationOpen(game.game_date)) {
+    if (isLotteryDue(game.game_date)) {
       recalculateGame(gameId);
       createGameSnapshot(gameId);
     }
@@ -579,7 +638,7 @@ function serializeGame(gameId, viewerUserId = null) {
     return null;
   }
 
-  // Calculate total appearances per user across all past/present locked/completed registrations
+  // Calculate total appearances per user across all game registrations.
   const appearanceCounts = new Map();
   const appearances = all(`SELECT user_id, COUNT(*) as count FROM registrations GROUP BY user_id`);
   appearances.forEach((row) => {
@@ -592,7 +651,8 @@ function serializeGame(gameId, viewerUserId = null) {
             r.role,
             r.joined_at,
             u.id AS user_id,
-            u.name
+            u.name,
+            u.profile_image
      FROM registrations r
      JOIN users u ON u.id = r.user_id
      WHERE r.game_id = ?
@@ -603,6 +663,7 @@ function serializeGame(gameId, viewerUserId = null) {
     userId: Number(row.user_id),
     name: row.name,
     email: '',
+    profileImage: row.profile_image || '',
     position: Number(row.position),
     role: row.role,
     joinedAt: row.joined_at,
@@ -629,10 +690,9 @@ function serializeGame(gameId, viewerUserId = null) {
     viewerRole: viewerPlayer?.role || null,
     createdByUserId: game.created_by_user_id ? Number(game.created_by_user_id) : null,
     createdByName: 'אדמין',
-    registrationDeadline: registrationDeadlineIso(game.game_date),
-    canRegister: isRegistrationOpen(game.game_date),
-    isRegistrationClosed: !isRegistrationOpen(game.game_date),
-    reminderDueAt: registrationDeadlineIso(game.game_date),
+    lotteryAt: lotteryAtIso(game.game_date),
+    canRegister: true,
+    reminderDueAt: lotteryAtIso(game.game_date),
     reminderSentAt: null,
     injuredPlayers: getActiveInjuredPlayers(),
     createdAt: game.created_at,
@@ -683,7 +743,7 @@ function getLotteryOverview() {
           id: currentGame.id,
           title: currentGame.title,
           gameDate: currentGame.gameDate,
-          registrationDeadline: currentGame.registrationDeadline,
+          lotteryAt: currentGame.lotteryAt,
           status: currentGame.status,
           playersCount: currentGame.playersCount,
         }
@@ -700,12 +760,6 @@ function validateGameInput(payload) {
 
   if (!gameDate) {
     return { error: 'יש להזין תאריך ושעה תקינים למשחק.' };
-  }
-
-  if (Date.now() >= new Date(registrationDeadlineIso(gameDate.toISOString())).getTime()) {
-    return {
-      error: `יש ליצור משחק לפני מועד הנעילה: יום קודם בשעה ${String(REGISTRATION_LOCK_HOUR).padStart(2, '0')}:00.`,
-    };
   }
 
   return {
@@ -745,6 +799,10 @@ async function bootstrapDatabase() {
       last_name TEXT NOT NULL DEFAULT '',
       password_hash TEXT,
       profile_completed INTEGER NOT NULL DEFAULT 1,
+      profile_email TEXT NOT NULL DEFAULT '',
+      phone TEXT NOT NULL DEFAULT '',
+      profile_info TEXT NOT NULL DEFAULT '',
+      profile_image TEXT NOT NULL DEFAULT '',
       is_active INTEGER NOT NULL DEFAULT 1,
       is_injured INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
@@ -821,6 +879,10 @@ async function bootstrapDatabase() {
   ensureColumn('users', 'last_name', "TEXT NOT NULL DEFAULT ''");
   ensureColumn('users', 'password_hash', 'TEXT');
   ensureColumn('users', 'profile_completed', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn('users', 'profile_email', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn('users', 'phone', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn('users', 'profile_info', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn('users', 'profile_image', "TEXT NOT NULL DEFAULT ''");
   ensureColumn('users', 'is_active', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn('users', 'is_injured', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('users', 'injury_until', 'TEXT');
@@ -860,7 +922,7 @@ async function startServer() {
       allowedHeaders: ['Content-Type'],
     })
   );
-  app.use(express.json());
+  app.use(express.json({ limit: '1mb' }));
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, now: nowIso() });
@@ -871,7 +933,7 @@ async function startServer() {
       vapidPublicKey: '',
       closedGroupEnabled: false,
       registrationLeadHours: 0,
-      registrationLockHour: REGISTRATION_LOCK_HOUR,
+      lotteryHour: LOTTERY_HOUR,
       googleClientId: '',
       adminLoginEnabled: Boolean(ADMIN_USERNAME && ADMIN_PASSWORD),
     });
@@ -901,6 +963,21 @@ async function startServer() {
 
   app.get('/api/players/active', (_req, res) => {
     const players = getActivePlayerRows().map((user) => ({ id: Number(user.id), name: user.name }));
+    return res.json({ players });
+  });
+
+  app.get('/api/players/profiles', (req, res) => {
+    const requester = getRequester(Number(req.query.userId || 0));
+    if (requester.error) {
+      return res.status(requester.error.status).json({ message: requester.error.message });
+    }
+
+    const players = all(
+      `SELECT id, name, first_name, last_name, profile_email, phone, profile_info, profile_image
+       FROM users
+       WHERE is_active = 1
+       ORDER BY name COLLATE NOCASE ASC, id ASC`
+    ).map(serializePlayerProfile);
     return res.json({ players });
   });
 
@@ -1010,6 +1087,40 @@ async function startServer() {
     }
 
     return res.json({ user: serializeUser(requester.user) });
+  });
+
+  app.patch('/api/users/:userId/profile', (req, res) => {
+    const userId = Number(req.params.userId);
+    const requester = getRequester(Number(req.body?.userId));
+    if (requester.error) {
+      return res.status(requester.error.status).json({ message: requester.error.message });
+    }
+    if (requester.user.id !== userId) {
+      return res.status(403).json({ message: 'ניתן לערוך רק את הפרופיל האישי.' });
+    }
+
+    const profileEmail = String(req.body?.profileEmail || '').trim();
+    const phone = String(req.body?.phone || '').trim();
+    const profileInfo = String(req.body?.profileInfo || '').trim();
+    const profileImage = String(req.body?.profileImage || '');
+    if (profileEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(profileEmail)) {
+      return res.status(400).json({ message: 'כתובת האימייל אינה תקינה.' });
+    }
+    if (profileEmail.length > 254 || phone.length > 40 || profileInfo.length > 2000) {
+      return res.status(400).json({ message: 'אחד מפרטי הפרופיל ארוך מהמותר.' });
+    }
+    if (profileImage && (!/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+=*$/.test(profileImage) || profileImage.length > 500000)) {
+      return res.status(400).json({ message: 'יש לבחור תמונת JPG, PNG או WebP בגודל קטן יותר.' });
+    }
+
+    run(
+      `UPDATE users
+       SET profile_email = ?, phone = ?, profile_info = ?, profile_image = ?, updated_at = ?
+       WHERE id = ?`,
+      [profileEmail, phone, profileInfo, profileImage, nowIso(), userId]
+    );
+    persistDb();
+    return res.json({ user: serializeUser(getUserRow(userId)) });
   });
 
   app.get('/api/admin/players', (req, res) => {
@@ -1263,12 +1374,6 @@ async function startServer() {
       return res.status(409).json({ message: 'המשחק בוטל ולא ניתן להצטרף.' });
     }
 
-    if (!isRegistrationOpen(currentGame.game_date)) {
-      return res.status(409).json({
-        message: `ההרשמה נסגרה. הנעילה מתבצעת יום לפני המשחק בשעה ${String(REGISTRATION_LOCK_HOUR).padStart(2, '0')}:00.`,
-      });
-    }
-
     const existing = get('SELECT id FROM registrations WHERE game_id = ? AND user_id = ?', [gameId, requester.user.id]);
     if (existing) {
       return res.status(409).json({ message: 'כבר נרשמת למשחק.' });
@@ -1338,7 +1443,7 @@ async function startServer() {
     return res.json({
       game: currentGame ? { id: Number(currentGame.id), title: currentGame.title, gameDate: currentGame.game_date } : null,
       items,
-      canEdit: currentGame ? isRegistrationOpen(currentGame.game_date) : false,
+      canEdit: Boolean(currentGame),
     });
   });
 
@@ -1357,10 +1462,6 @@ async function startServer() {
     }
 
     const currentGame = getGameRow(gameId);
-    if (!isRegistrationOpen(currentGame.game_date)) {
-      return res.status(409).json({ message: 'ההרשמה נסגרה, לא ניתן לשנות ציוד למשחק זה.' });
-    }
-
     if (!itemName) {
       // If empty name provided, delete user's equipment
       run('DELETE FROM equipment WHERE game_id = ? AND user_id = ?', [gameId, requester.user.id]);
@@ -1401,10 +1502,10 @@ async function startServer() {
     res.status(404).json({ message: 'Endpoint לא נמצא.' });
   });
 
-  recalculateLockedGames();
+  processScheduledGames();
   cleanupInactivePlayers();
   setInterval(() => {
-    recalculateLockedGames();
+    processScheduledGames();
     cleanupInactivePlayers();
   }, 60000);
 

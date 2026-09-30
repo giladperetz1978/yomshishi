@@ -1,7 +1,7 @@
 import type { FormEvent } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 
-type GameStatus = 'OPEN' | 'CONFIRMED' | 'WAITING' | 'LOCKED' | 'CANCELLED'
+type GameStatus = 'OPEN' | 'CONFIRMED' | 'WAITING' | 'CANCELLED'
 type PlayerRole = 'PLAYING' | 'WAITING'
 
 type User = {
@@ -11,6 +11,10 @@ type User = {
   lastName: string
   profileCompleted: boolean
   email: string
+  profileEmail: string
+  phone: string
+  profileInfo: string
+  profileImage: string
   isAdmin: boolean
   isActive?: boolean
   isInjured?: boolean
@@ -34,11 +38,23 @@ type Player = {
   userId: number
   name: string
   email: string
+  profileImage: string
   position: number
   role: PlayerRole
   joinedAt: string
   appearancesCount?: number
 }
+
+type PlayerProfile = {
+  id: number
+  name: string
+  profileEmail: string
+  phone: string
+  profileInfo: string
+  profileImage: string
+}
+
+type ProfileFormState = Omit<PlayerProfile, 'id' | 'name'>
 
 type Game = {
   id: number
@@ -56,9 +72,8 @@ type Game = {
   viewerRole: PlayerRole | null
   createdByUserId: number | null
   createdByName: string
-  registrationDeadline: string
+  lotteryAt: string
   canRegister: boolean
-  isRegistrationClosed: boolean
   reminderDueAt: string
   reminderSentAt: string | null
   injuredPlayers: InjuredPlayer[]
@@ -68,7 +83,7 @@ type ApiConfig = {
   vapidPublicKey: string
   closedGroupEnabled: boolean
   registrationLeadHours: number
-  registrationLockHour?: number
+  lotteryHour?: number
   googleClientId: string
   adminLoginEnabled: boolean
 }
@@ -85,7 +100,7 @@ type GameFormState = {
   gameDate: string
 }
 
-type AppTab = 'main' | 'equipment' | 'rules' | 'lottery' | 'snapshots' | 'injured'
+type AppTab = 'main' | 'equipment' | 'rules' | 'lottery' | 'players' | 'snapshots' | 'injured'
 
 type InjuredPlayer = {
   id: number
@@ -126,7 +141,7 @@ type LotteryOverviewResponse = {
     id: number
     title: string
     gameDate: string
-    registrationDeadline: string
+    lotteryAt: string
     status: GameStatus
     playersCount: number
   } | null
@@ -204,8 +219,6 @@ function getStatusLabel(status: GameStatus): string {
       return 'מאושר (6-9)'
     case 'WAITING':
       return 'הגרלה פעילה'
-    case 'LOCKED':
-      return '12 שחקנים - כולם משחקים'
     case 'CANCELLED':
       return 'מבוטל'
     default:
@@ -262,6 +275,32 @@ function toDateInputValue(value: string | null | undefined): string {
   if (Number.isNaN(date.getTime())) return ''
   const localValue = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
   return localValue.toISOString().slice(0, 10)
+}
+
+function resizeProfileImage(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    const objectUrl = URL.createObjectURL(file)
+    image.onload = () => {
+      const scale = Math.min(1, 512 / Math.max(image.width, image.height))
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.max(1, Math.round(image.width * scale))
+      canvas.height = Math.max(1, Math.round(image.height * scale))
+      const context = canvas.getContext('2d')
+      URL.revokeObjectURL(objectUrl)
+      if (!context) {
+        reject(new Error('לא ניתן לעבד את התמונה.'))
+        return
+      }
+      context.drawImage(image, 0, 0, canvas.width, canvas.height)
+      resolve(canvas.toDataURL('image/jpeg', 0.78))
+    }
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl)
+      reject(new Error('לא ניתן לטעון את התמונה שנבחרה.'))
+    }
+    image.src = objectUrl
+  })
 }
 
 function gameToForm(game: Game): GameFormState {
@@ -429,6 +468,15 @@ function App() {
   const [userEquipmentInput, setUserEquipmentInput] = useState('')
   const [injuredPlayers, setInjuredPlayers] = useState<InjuredPlayer[]>([])
   const [injuryUntilInput, setInjuryUntilInput] = useState('')
+  const [playerProfiles, setPlayerProfiles] = useState<PlayerProfile[]>([])
+  const [selectedProfileId, setSelectedProfileId] = useState<number | null>(null)
+  const [isEditingProfile, setIsEditingProfile] = useState(false)
+  const [profileForm, setProfileForm] = useState<ProfileFormState>({
+    profileEmail: '',
+    phone: '',
+    profileInfo: '',
+    profileImage: '',
+  })
 
   const registeredUserId = useMemo(() => readStoredUserId(), [])
   const hasAdminSession = Boolean(adminToken)
@@ -536,6 +584,16 @@ function App() {
     setSnapshots(response.snapshots || [])
   }
 
+  async function refreshPlayerProfiles(userId: number) {
+    const response = await apiRequest<{ players: PlayerProfile[] }>(`/api/players/profiles?userId=${userId}`)
+    setPlayerProfiles(response.players || [])
+    setSelectedProfileId((current) =>
+      current && response.players.some((player) => player.id === current)
+        ? current
+        : response.players.find((player) => player.id === userId)?.id ?? response.players[0]?.id ?? null
+    )
+  }
+
   async function refreshEquipmentOverview() {
     const response = await apiRequest<EquipmentOverviewResponse>('/api/equipment/current')
     setEquipmentOverview(response)
@@ -551,7 +609,7 @@ function App() {
   }
 
   async function refreshAll(userId?: number) {
-    await Promise.all([
+    const requests = [
       refreshGame(userId),
       refreshUpcomingGames(userId),
       refreshPlayersList(),
@@ -559,7 +617,9 @@ function App() {
       refreshSnapshots(),
       refreshEquipmentOverview(),
       refreshInjuredPlayers(),
-    ])
+    ]
+    if (userId) requests.push(refreshPlayerProfiles(userId))
+    await Promise.all(requests)
   }
 
   function logout() {
@@ -850,6 +910,30 @@ function App() {
     }
   }
 
+  async function savePlayerProfile(event: FormEvent) {
+    event.preventDefault()
+    if (!user) return
+
+    setError('')
+    setSuccess('')
+    setIsBusy(true)
+    try {
+      const response = await apiRequest<{ user: User }>(`/api/users/${user.id}/profile`, {
+        method: 'PATCH',
+        body: JSON.stringify({ userId: user.id, ...profileForm }),
+      })
+      setUser(response.user)
+      await refreshPlayerProfiles(user.id)
+      setIsEditingProfile(false)
+      setSuccess('הפרופיל נשמר.')
+    } catch (requestError: unknown) {
+      const errorMessage = requestError instanceof Error ? requestError.message : 'שמירת הפרופיל נכשלה.'
+      setError(errorMessage)
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
   async function createPlayerByAdmin(event: FormEvent) {
     event.preventDefault()
     if (!hasAdminSession) return
@@ -948,6 +1032,7 @@ function App() {
   const nextGame = upcomingGames.find((item) => item.id !== spotlightGame?.id) ?? null
   const rosterGames = [spotlightGame, nextGame].filter((item): item is Game => Boolean(item))
   const isUserInGame = Boolean(user && game?.players.some((item) => item.userId === user.id))
+  const selectedPlayerProfile = playerProfiles.find((player) => player.id === selectedProfileId) ?? null
 
   const canShowCreateForm = Boolean(hasAdminSession && upcomingGames.length < maxActiveGames)
   const canShowAdminEditor = Boolean(hasAdminSession && upcomingGames.length)
@@ -1110,8 +1195,17 @@ function App() {
                   className={`tab-btn ${activeTab === 'snapshots' ? 'tab-btn-active' : ''}`}
                   onClick={() => setActiveTab('snapshots')}
                 >
-                  רשימות שחקנים
+                  ארכיון משחקים
                 </button>
+                {user && (
+                  <button
+                    type="button"
+                    className={`tab-btn ${activeTab === 'players' ? 'tab-btn-active' : ''}`}
+                    onClick={() => setActiveTab('players')}
+                  >
+                    רשימת השחקנים
+                  </button>
+                )}
                 <button
                   type="button"
                   className={`tab-btn ${activeTab === 'injured' ? 'tab-btn-active' : ''}`}
@@ -1151,7 +1245,7 @@ function App() {
 
                   <div className="meta-grid">
                     <div className="meta-pill">{spotlightGame.location || 'מיקום יעודכן'}</div>
-                    <div className="meta-pill">סגירת הרשמה: {formatGameDateTime(spotlightGame.registrationDeadline)}</div>
+                    <div className="meta-pill">מועד ההגרלה: {formatGameDateTime(spotlightGame.lotteryAt)}</div>
                     <div className="meta-pill">מינימום לפתיחת משחק: 6 שחקנים</div>
                   </div>
 
@@ -1159,13 +1253,7 @@ function App() {
 
                   {user && game && game.viewerPosition && (
                     <p className="message message-ok inline-message">
-                      המיקום שלך: #{game.viewerPosition} | סטטוס: {game.viewerRole === 'PLAYING' ? 'משחק' : 'הוגרלת החוצה'}
-                    </p>
-                  )}
-
-                  {game?.isRegistrationClosed && (
-                    <p className="message message-error inline-message">
-                      ההרשמה נסגרה. הנעילה מתבצעת יום לפני המשחק בשעה {String(apiConfig?.registrationLockHour || 20).padStart(2, '0')}:00.
+                      המיקום שלך: #{game.viewerPosition} | {game.viewerRole === 'PLAYING' ? 'משחק' : 'מגיע/ה כשעה לאחר תחילת המשחק'}
                     </p>
                   )}
 
@@ -1181,11 +1269,11 @@ function App() {
 
                     {user && game && !isUserInGame ? (
                       <button
-                        disabled={isBusy || game.isRegistrationClosed}
+                        disabled={isBusy}
                         className="cta cta-primary"
                         onClick={joinGame}
                       >
-                        {game.isRegistrationClosed ? 'ההרשמה נסגרה' : 'הרשמה למשחק'}
+                        הרשמה למשחק
                       </button>
                     ) : null}
 
@@ -1422,14 +1510,23 @@ function App() {
                   {rosterGame.players.length ? (
                     rosterGame.players.map((player) => (
                       <li key={player.registrationId}>
-                        <span>
-                          <strong>#{player.position}</strong> {player.name}
-                          <span style={{ fontSize: '12px', opacity: 0.8, marginRight: '6px' }}>
-                            ({player.appearancesCount ?? 0} הגעות)
+                        <span className="roster-player-name">
+                          {player.profileImage ? (
+                            <img className="player-avatar" src={player.profileImage} alt="" />
+                          ) : (
+                            <span className="player-avatar player-avatar-fallback" aria-hidden="true">
+                              {player.name.slice(0, 1)}
+                            </span>
+                          )}
+                          <span>
+                            <strong>#{player.position}</strong> {player.name}
+                            <span style={{ fontSize: '12px', opacity: 0.8, marginRight: '6px' }}>
+                              ({player.appearancesCount ?? 0} הגעות)
+                            </span>
                           </span>
                         </span>
-                        <span className={`tag ${player.role === 'PLAYING' ? 'tag-play' : 'tag-wait'}`}>
-                          {player.role === 'PLAYING' ? 'משחק' : 'בחוץ בסבב'}
+                        <span className={`tag ${player.role === 'PLAYING' ? 'tag-play' : 'tag-wait tag-arrival'}`}>
+                          {player.role === 'PLAYING' ? 'משחק' : 'מגיע/ה כשעה לאחר תחילת המשחק'}
                         </span>
                       </li>
                     ))
@@ -1529,15 +1626,14 @@ function App() {
                 </div>
 
                 <ul className="rules-list">
-                  <li>ההרשמה נסגרת יום לפני המשחק בשעה {String(apiConfig?.registrationLockHour || 20).padStart(2, '0')}:00.</li>
-                  <li>עד 9 נרשמים: כולם משחקים.</li>
-                  <li>10 נרשמים: אחד יוצא בהגרלה.</li>
-                  <li>11 נרשמים: שניים יוצאים בהגרלה.</li>
-                  <li>12 נרשמים: כולם משחקים (LOCKED).</li>
-                  <li>13 ומעלה: 12 הראשונים בהרכב, והנוספים בסבב המתנה.</li>
-                  <li>ההגרלה מתבצעת אוטומטית רק אחרי נעילת ההרשמה (יום לפני המשחק בשעה {String(apiConfig?.registrationLockHour || 20).padStart(2, '0')}:00).</li>
-                  <li>לפני שעת הנעילה אין שחקנים שמוגרלים החוצה, כדי למנוע הגרלה מוקדמת ומיותרת.</li>
-                  <li>אחרי שעת הנעילה השרת מבצע את ההגרלה לפי סבב הוגן: מי שישב פחות פעמים מקבל עדיפות.</li>
+                  <li>ההרשמה נשארת פתוחה תמיד. ההגרלה מתבצעת ביום שלפני המשחק בשעה {String(apiConfig?.lotteryHour || 21).padStart(2, '0')}:00.</li>
+                  <li>עד 9 נרשמים: אין הגרלה וכולם משחקים.</li>
+                  <li>10 נרשמים: שחקן אחד ממתין; 11 נרשמים: שני שחקנים ממתינים.</li>
+                  <li>12 נרשמים: כולם משחקים ואין הגרלה.</li>
+                  <li>מהשחקן ה־13 ואילך: המצטרפים ממתינים אוטומטית; כשיש בדיוק 12 שחקנים ההמתנה מתבטלת.</li>
+                  <li>מצטרפים אחרי שעת ההגרלה ממתינים אוטומטית, למעט מצב של 12 נרשמים.</li>
+                  <li>מי שממתין מגיע/ה כשעה לאחר תחילת המשחק.</li>
+                  <li>ההגרלה ההוגנת נותנת עדיפות למי שישב פחות פעמים.</li>
                   <li>בשוויון במספר הפעמים שישבו בחוץ: מתבצע ערבוב אקראי בין השחקנים הרלוונטיים.</li>
                   <li>שחקן שיוצא בהגרלה מגיע שעה אחרי תחילת המשחק ויכול להחליף שחקנים עייפים.</li>
                 </ul>
@@ -1618,12 +1714,140 @@ function App() {
               </article>
             )}
 
+            {activeTab === 'players' && user && (
+              <article className="card full-width">
+                <div className="section-head">
+                  <div>
+                    <p className="section-kicker">Player Directory</p>
+                    <h2>רשימת השחקנים</h2>
+                  </div>
+                  {!isEditingProfile && (
+                    <button
+                      type="button"
+                      className="cta cta-secondary"
+                      onClick={() => {
+                        setProfileForm({
+                          profileEmail: user.profileEmail || '',
+                          phone: user.phone || '',
+                          profileInfo: user.profileInfo || '',
+                          profileImage: user.profileImage || '',
+                        })
+                        setIsEditingProfile(true)
+                      }}
+                    >
+                      עריכת הפרופיל שלי
+                    </button>
+                  )}
+                </div>
+
+                {isEditingProfile && (
+                  <form className="input-grid profile-editor" onSubmit={savePlayerProfile}>
+                    <input
+                      type="email"
+                      placeholder="אימייל שיוצג לשחקנים"
+                      value={profileForm.profileEmail}
+                      onChange={(event) => setProfileForm((current) => ({ ...current, profileEmail: event.target.value }))}
+                    />
+                    <input
+                      type="tel"
+                      placeholder="טלפון"
+                      value={profileForm.phone}
+                      onChange={(event) => setProfileForm((current) => ({ ...current, phone: event.target.value }))}
+                    />
+                    <textarea
+                      maxLength={2000}
+                      placeholder="כמה מילים עליך או כל פרט שבא לך לשתף"
+                      value={profileForm.profileInfo}
+                      onChange={(event) => setProfileForm((current) => ({ ...current, profileInfo: event.target.value }))}
+                    />
+                    <div className="profile-photo-picker">
+                      {profileForm.profileImage ? (
+                        <img className="profile-preview" src={profileForm.profileImage} alt="תצוגה מקדימה של תמונת הפרופיל" />
+                      ) : (
+                        <span className="profile-preview player-avatar-fallback" aria-hidden="true">{user.name.slice(0, 1)}</span>
+                      )}
+                      <label className="profile-file-label">
+                        בחירת תמונה
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={(event) => {
+                            const file = event.target.files?.[0]
+                            if (!file) return
+                            resizeProfileImage(file)
+                              .then((profileImage) => setProfileForm((current) => ({ ...current, profileImage })))
+                              .catch((imageError: unknown) => {
+                                setError(imageError instanceof Error ? imageError.message : 'טעינת התמונה נכשלה.')
+                              })
+                          }}
+                        />
+                      </label>
+                      {profileForm.profileImage && (
+                        <button
+                          type="button"
+                          className="cta cta-soft"
+                          onClick={() => setProfileForm((current) => ({ ...current, profileImage: '' }))}
+                        >
+                          הסרת תמונה
+                        </button>
+                      )}
+                    </div>
+                    <div className="row">
+                      <button type="submit" className="cta cta-primary" disabled={isBusy}>שמירת פרופיל</button>
+                      <button type="button" className="cta cta-soft" onClick={() => setIsEditingProfile(false)}>ביטול</button>
+                    </div>
+                  </form>
+                )}
+
+                <div className="player-directory">
+                  <div className="profile-player-list" aria-label="שחקנים פעילים">
+                    {playerProfiles.map((player) => (
+                      <button
+                        key={player.id}
+                        type="button"
+                        className={`profile-player-button ${selectedProfileId === player.id ? 'profile-player-selected' : ''}`}
+                        aria-pressed={selectedProfileId === player.id}
+                        onClick={() => setSelectedProfileId(player.id)}
+                      >
+                        {player.profileImage ? (
+                          <img className="player-avatar" src={player.profileImage} alt="" />
+                        ) : (
+                          <span className="player-avatar player-avatar-fallback" aria-hidden="true">{player.name.slice(0, 1)}</span>
+                        )}
+                        <span>{player.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                  {selectedPlayerProfile && (
+                    <section className="profile-detail" aria-live="polite">
+                      {selectedPlayerProfile.profileImage ? (
+                        <img className="profile-detail-image" src={selectedPlayerProfile.profileImage} alt={`תמונת פרופיל של ${selectedPlayerProfile.name}`} />
+                      ) : (
+                        <span className="profile-detail-image player-avatar-fallback" aria-hidden="true">
+                          {selectedPlayerProfile.name.slice(0, 1)}
+                        </span>
+                      )}
+                      <div>
+                        <h3>{selectedPlayerProfile.name}</h3>
+                        {selectedPlayerProfile.phone && <p><a href={`tel:${selectedPlayerProfile.phone}`}>{selectedPlayerProfile.phone}</a></p>}
+                        {selectedPlayerProfile.profileEmail && <p><a href={`mailto:${selectedPlayerProfile.profileEmail}`}>{selectedPlayerProfile.profileEmail}</a></p>}
+                        {selectedPlayerProfile.profileInfo && <p className="profile-info">{selectedPlayerProfile.profileInfo}</p>}
+                        {!selectedPlayerProfile.phone && !selectedPlayerProfile.profileEmail && !selectedPlayerProfile.profileInfo && (
+                          <p className="muted">השחקן/ית עדיין לא הוסיף/ה פרטים לפרופיל.</p>
+                        )}
+                      </div>
+                    </section>
+                  )}
+                </div>
+              </article>
+            )}
+
             {activeTab === 'snapshots' && (
               <article className="card full-width">
                 <div className="section-head">
                   <div>
                     <p className="section-kicker">Archive</p>
-                    <h2>רשימות שחקנים מהמשחקים האחרונים</h2>
+                    <h2>ארכיון משחקים אחרונים</h2>
                   </div>
                 </div>
                 {snapshots.length === 0 ? (

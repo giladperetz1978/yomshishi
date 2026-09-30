@@ -641,6 +641,154 @@ textarea {
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
 }
 
+.roster-player-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.player-avatar {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  object-fit: cover;
+  border: 3px solid #000;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.player-avatar-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: #000;
+  font-weight: 900;
+}
+
+.tag-arrival {
+  max-width: 190px;
+  white-space: normal;
+  text-align: center;
+  font-family: 'Rubik', 'Heebo', sans-serif;
+  font-size: 0.8rem;
+  line-height: 1.3;
+}
+
+.profile-editor textarea {
+  min-height: 100px;
+}
+
+.profile-photo-picker {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.profile-preview {
+  width: 88px;
+  height: 88px;
+  object-fit: cover;
+  border: 4px solid #000;
+  border-radius: 50%;
+}
+
+.profile-file-label {
+  border: 4px solid #000;
+  padding: 8px 12px;
+  background: var(--accent);
+  box-shadow: 4px 4px 0 #000;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.profile-file-label input {
+  display: block;
+  max-width: 220px;
+  margin-top: 8px;
+  font-size: 0.8rem;
+}
+
+.player-directory {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.2fr);
+  gap: 20px;
+  margin-top: 20px;
+}
+
+.profile-player-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  align-content: start;
+  gap: 10px;
+  max-height: 480px;
+  overflow: auto;
+}
+
+.profile-player-button {
+  min-width: 0;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border: 3px solid #000;
+  background: #fff;
+  box-shadow: 3px 3px 0 #000;
+  color: #000;
+  text-align: right;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.profile-player-button > span:last-child {
+  overflow-wrap: anywhere;
+}
+
+.profile-player-selected {
+  background: #cfe9ff;
+  outline: 2px solid var(--brand);
+}
+
+.profile-detail {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  min-width: 0;
+  padding: 16px;
+  border-right: 5px solid var(--brand);
+  background: #f4f8fc;
+}
+
+.profile-detail-image {
+  width: 104px;
+  height: 104px;
+  flex: 0 0 104px;
+  object-fit: cover;
+  border: 4px solid #000;
+  border-radius: 50%;
+  font-size: 2rem;
+}
+
+.profile-detail h3 {
+  margin: 0 0 10px;
+  font-family: 'Press Start 2P', monospace;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.profile-detail p {
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+
+.profile-info {
+  white-space: pre-wrap;
+}
+
 .tag {
   font-family: 'Press Start 2P', monospace;
   font-size: 0.65rem;
@@ -874,5 +1022,26 @@ textarea {
 
   .game-scoreboard {
     align-self: flex-start;
+  }
+
+  .player-directory {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .profile-player-list {
+    max-height: 320px;
+  }
+
+  .profile-detail {
+    flex-direction: column;
+  }
+
+  .profile-detail-image {
+    align-self: center;
+  }
+
+  .players li {
+    flex-wrap: wrap;
+    align-items: flex-start;
   }
 }

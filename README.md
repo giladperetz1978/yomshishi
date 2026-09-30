@@ -15,13 +15,18 @@ Closed-group app for managing Friday 3v3 basketball games with manual game creat
 
 - Games are created manually by participants and are not auto-created by the server.
 - The player who creates a game is not auto-registered and must join like everyone else.
-- Registration closes 24 hours before the game (`REGISTRATION_LEAD_HOURS`).
-- At the registration deadline, a push reminder is sent automatically to everyone who installed the app and enabled push.
+- Registration remains open after the lottery; the game does not lock at the cutoff.
+- The lottery runs automatically at 21:00 Israel time on the day before the game.
 - OPEN: 0-5 players
-- CONFIRMED: 6-9 players
-- WAITING: 10-11 players (positions 10-11 in waiting list)
-- LOCKED: 12 players (all must attend)
-- On drop from 12 to 11, positions 10-11 return to waiting.
+- CONFIRMED: every registered player currently has a playing role
+- Before the lottery, 10-11 players all remain in the playing role.
+- Up to 9 players: everyone plays, with no lottery.
+- 10-11 players after the lottery: one or two players wait, respectively.
+- WAITING: one or more players are assigned to the late-arrival list.
+- Exactly 12 players: everyone plays and any waiting status is cleared.
+- After the lottery, new registrations are automatically assigned to the waiting list; players above position 12 wait automatically.
+- Waiting players arrive about one hour after the game starts.
+- Player profiles support an optional public photo, email, phone, and free-form details. Photos are resized in the browser and stored in the local SQLite database.
 - Active players who have not registered for a game for two consecutive months are automatically deactivated by the server.
 - An injury status exempts a player from inactivity cleanup until the selected injury end date. The end date can be extended from the injury screen.
 - Active injured players and their injury end dates are displayed alongside each game roster.
@@ -38,14 +43,12 @@ Closed-group app for managing Friday 3v3 basketball games with manual game creat
    - Keep `VITE_API_BASE_URL` empty when frontend is served from the same backend host.
    - Run `npm install` in frontend.
    - Run `npm run dev` in frontend.
+   - The Vite development server proxies `/api` to the local backend at `http://localhost:8787`.
 
-## Push Notifications
+## Scheduled Lottery
 
-- Generate VAPID keys (example):
-  - `npx web-push generate-vapid-keys`
-- Put keys in `backend/.env`.
-- The backend checks every few minutes for games whose 24-hour reminder time has arrived.
-- Optional manual trigger endpoint: POST `/api/reminders/dispatch` with secret from `REMINDER_SECRET`.
+- The backend checks upcoming games every minute.
+- At 21:00 Israel time on the day before a game, it recalculates player roles and saves the roster snapshot.
 
 ## GitHub Pages
 
