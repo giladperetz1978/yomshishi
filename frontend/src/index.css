@@ -648,6 +648,28 @@ textarea {
   min-width: 0;
 }
 
+.roster-player-profile {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: right;
+  cursor: pointer;
+}
+
+.roster-player-profile:hover .roster-player-name > span:last-child {
+  text-decoration: underline;
+}
+
+.roster-player-profile:focus-visible {
+  outline: 3px solid var(--brand);
+  outline-offset: 3px;
+}
+
 .player-avatar {
   width: 42px;
   height: 42px;

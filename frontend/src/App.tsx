@@ -539,6 +539,12 @@ function App() {
     }
   }, [game, isEditingGame, editingGameId, upcomingGames])
 
+  useEffect(() => {
+    if (activeTab === 'players') {
+      document.getElementById('player-directory')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }, [activeTab])
+
   async function refreshPlayersList() {
     const response = await apiRequest<{ players: PlayerOption[] }>('/api/players/active')
     setPlayerOptions(response.players || [])
@@ -1510,21 +1516,31 @@ function App() {
                   {rosterGame.players.length ? (
                     rosterGame.players.map((player) => (
                       <li key={player.registrationId}>
-                        <span className="roster-player-name">
-                          {player.profileImage ? (
-                            <img className="player-avatar" src={player.profileImage} alt="" />
-                          ) : (
-                            <span className="player-avatar player-avatar-fallback" aria-hidden="true">
-                              {player.name.slice(0, 1)}
-                            </span>
-                          )}
-                          <span>
-                            <strong>#{player.position}</strong> {player.name}
-                            <span style={{ fontSize: '12px', opacity: 0.8, marginRight: '6px' }}>
-                              ({player.appearancesCount ?? 0} הגעות)
+                          <button
+                            type="button"
+                            className="roster-player-profile"
+                            aria-label={`הצגת הפרופיל של ${player.name}`}
+                            onClick={() => {
+                              setSelectedProfileId(player.userId)
+                              setActiveTab('players')
+                            }}
+                          >
+                            <span className="roster-player-name">
+                              {player.profileImage ? (
+                                <img className="player-avatar" src={player.profileImage} alt="" />
+                              ) : (
+                                <span className="player-avatar player-avatar-fallback" aria-hidden="true">
+                                  {player.name.slice(0, 1)}
+                                </span>
+                              )}
+                              <span>
+                                <strong>#{player.position}</strong> {player.name}
+                                <span style={{ fontSize: '12px', opacity: 0.8, marginRight: '6px' }}>
+                                  ({player.appearancesCount ?? 0} הגעות)
+                                </span>
                             </span>
                           </span>
-                        </span>
+                          </button>
                         <span className={`tag ${player.role === 'PLAYING' ? 'tag-play' : 'tag-wait tag-arrival'}`}>
                           {player.role === 'PLAYING' ? 'משחק' : 'מגיע/ה כשעה לאחר תחילת המשחק'}
                         </span>
@@ -1715,7 +1731,7 @@ function App() {
             )}
 
             {activeTab === 'players' && user && (
-              <article className="card full-width">
+              <article id="player-directory" className="card full-width">
                 <div className="section-head">
                   <div>
                     <p className="section-kicker">Player Directory</p>
