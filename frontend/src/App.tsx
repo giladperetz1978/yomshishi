@@ -1,5 +1,6 @@
 import type { FormEvent } from 'react'
 import { useEffect, useMemo, useState } from 'react'
+import PyxelBasketballRun from './PyxelBasketballRun'
 
 type GameStatus = 'OPEN' | 'CONFIRMED' | 'WAITING' | 'CANCELLED'
 type PlayerRole = 'PLAYING' | 'WAITING'
@@ -100,7 +101,7 @@ type GameFormState = {
   gameDate: string
 }
 
-type AppTab = 'main' | 'equipment' | 'rules' | 'lottery' | 'players' | 'snapshots' | 'injured'
+type AppTab = 'main' | 'equipment' | 'rules' | 'lottery' | 'players' | 'snapshots' | 'injured' | 'arcade'
 
 type InjuredPlayer = {
   id: number
@@ -1177,6 +1178,13 @@ function App() {
                 </button>
                 <button
                   type="button"
+                  className={`tab-btn ${activeTab === 'arcade' ? 'tab-btn-active' : ''}`}
+                  onClick={() => setActiveTab('arcade')}
+                >
+                  מגרש המשחקים
+                </button>
+                <button
+                  type="button"
                   className={`tab-btn ${activeTab === 'equipment' ? 'tab-btn-active' : ''}`}
                   onClick={() => setActiveTab('equipment')}
                 >
@@ -1221,6 +1229,12 @@ function App() {
                 </button>
               </div>
             </article>
+
+            {activeTab === 'arcade' && (
+              <article className="card full-width arcade-card">
+                <PyxelBasketballRun />
+              </article>
+            )}
 
             {activeTab === 'main' && (
               <>

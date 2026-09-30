@@ -811,6 +811,141 @@ textarea {
   white-space: pre-wrap;
 }
 
+.arcade-card {
+  min-width: 0;
+  padding: clamp(12px, 2vw, 24px);
+}
+
+.basketball-run {
+  width: 100%;
+  min-width: 0;
+  color: #172c32;
+}
+
+.arcade-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 16px;
+}
+
+.arcade-header h2 {
+  margin: 3px 0 0;
+  font-size: 24px;
+}
+
+.arcade-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.arcade-lede {
+  margin: 0;
+  color: #52666a;
+  font-size: 14px;
+}
+
+.arcade-fullscreen-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 42px;
+  padding: 8px 12px;
+  border: 2px solid #172c32;
+  border-radius: 0;
+  background: #fff6df;
+  box-shadow: 3px 3px 0 #172c32;
+  color: #172c32;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.arcade-fullscreen-button span {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.arcade-fullscreen-button:active {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 #172c32;
+}
+
+.arcade-frame {
+  position: relative;
+  width: 100%;
+  max-width: 1200px;
+  margin-inline: auto;
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  border: 4px solid #172c32;
+  background: #202224;
+  box-shadow: 7px 7px 0 #172c32;
+}
+
+.arcade-frame:fullscreen,
+.arcade-frame-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  max-width: none;
+  margin: 0;
+  aspect-ratio: auto;
+  border: 0;
+  box-shadow: none;
+}
+
+.arcade-fullscreen-exit {
+  position: absolute;
+  bottom: auto;
+  left: max(8px, env(safe-area-inset-left));
+  top: max(2px, env(safe-area-inset-top));
+  right: auto;
+  z-index: 2;
+  min-height: 44px;
+  padding: 6px 10px;
+  opacity: .85;
+}
+
+.pyxel-game-frame {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+@media (pointer: coarse) and (orientation: portrait) {
+  .arcade-frame:not(.arcade-frame-fullscreen) {
+    min-height: 240px;
+    aspect-ratio: 4 / 3;
+  }
+}
+
+@media (max-width: 680px) {
+  .arcade-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .arcade-heading-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .arcade-frame {
+    border-width: 3px;
+    box-shadow: 4px 4px 0 #172c32;
+  }
+}
+
 .tag {
   font-family: 'Press Start 2P', monospace;
   font-size: 0.65rem;

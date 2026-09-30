@@ -45,6 +45,15 @@ Closed-group app for managing Friday 3v3 basketball games with manual game creat
    - Run `npm run dev` in frontend.
    - The Vite development server proxies `/api` to the local backend at `http://localhost:8787`.
 
+## Court Run Arcade
+
+- The arcade tab stars Itai Shlomi (#7), independently of the signed-in account.
+- Uses the official [Pyxel 2.9.9 Web runtime](https://github.com/kitao/pyxel) in an isolated iframe. Python game code and the host page live in `frontend/public/games/` and must be deployed alongside `dist/index.html`.
+- Designed for phones held sideways: landscape expands to the viewport; portrait pauses the game and displays a rotation prompt. Native fullscreen and orientation locking depend on browser support; the viewport fallback remains available.
+- Dedicated multi-touch buttons provide movement, double jump, dash, fire shots, pause and restart. The course includes safe checkpoints, cones, rivals, green/orange/red power-ups, score combos and a dunk finish. Green grants an extra life; orange and red grant timed growth and fire respectively.
+- Pyxel/Pyodide and Lucide icons load from pinned CDN URLs, so initial loading requires an internet connection. Sound starts after the player's first tap. Pyxel and Lucide are MIT-licensed upstream projects; game artwork is drawn with Pyxel primitives.
+- From the repository root, run `python -B -m unittest discover -s frontend/tests -p test_court_run.py -v` for focused mechanics tests (drawing/audio mocked). Also run `npm --prefix frontend run build` and verify real Pyxel rendering, multi-touch, rotation, fullscreen exit, and pause in a browser. Phone emulation does not replace a physical iOS/Android device check.
+
 ## Scheduled Lottery
 
 - The backend checks upcoming games every minute.

@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#202224" />
+    <title>איתי שלומי · בדרך לסל</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;700;800&display=swap" />
+    <script defer src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/gh/kitao/pyxel@v2.9.9/wasm/pyxel.js"></script>
+    <style>
+      * { box-sizing: border-box; }
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #102725;
+        color: #f2fff7;
+        font-family: 'Rubik', sans-serif;
+        touch-action: none;
+        user-select: none;
+      }
+
+      div#pyxel-screen {
+        position: absolute !important;
+        inset: 0 !important;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #202224;
+      }
+
+      canvas#canvas {
+        width: 100%;
+        height: 100%;
+        image-rendering: pixelated;
+      }
+      #stage { position: absolute; inset: 48px 0 80px; }
+      .hud { position: absolute; inset: 0 0 auto; height: 48px; display: flex; align-items: center; gap: 20px; padding: 0 max(14px, env(safe-area-inset-right)) 0 max(88px, env(safe-area-inset-left)); border-bottom: 2px solid #4c8c7e; background: #102725; }
+      .identity { color: #9fffc6; font-weight: 800; white-space: nowrap; }
+      .stat { font-size: 12px; color: #bdd3cc; white-space: nowrap; }
+      .stat b { font-size: 17px; color: #fff; margin-inline-start: 5px; font-variant-numeric: tabular-nums; }
+      #progress { position: absolute; bottom: 0; right: 0; height: 3px; background: #ffc75a; width: 0; }
+      .controls { position: absolute; inset: auto 0 0; height: 80px; display: flex; direction: ltr; align-items: center; justify-content: space-between; padding: 8px max(14px, env(safe-area-inset-right)) 8px max(14px, env(safe-area-inset-left)); background: #102725; border-top: 2px solid #4c8c7e; }
+      .group { display: flex; align-items: center; gap: 10px; }
+      button { font: inherit; cursor: pointer; touch-action: none; -webkit-tap-highlight-color: transparent; }
+      .control { display: grid; place-content: center; justify-items: center; width: 66px; height: 62px; gap: 2px; border: 2px solid #7eaaa0; border-bottom-width: 5px; border-radius: 8px; background: #24483f; color: #fff; font-size: 11px; font-weight: 700; }
+      .control svg { width: 23px; height: 23px; pointer-events: none; }
+      .control[data-held="true"], .control:active { border-bottom-width: 2px; background: #4e7669; }
+      .jump { background: #88edaa; border-color: #4cab78; color: #102725; width: 82px; }
+      .shoot { background: #ffc75a; border-color: #c38927; color: #302512; }
+      .dash { background: #a0d9ee; border-color: #5a91b6; color: #132c38; }
+      .utility { width: 44px; height: 44px; border-width: 1px; border-radius: 50%; background: #102725; }
+      button:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+      .control:disabled { opacity: .45; cursor: default; }
+      #power { font-size: 11px; text-align: center; color: #ffc75a; min-height: 14px; }
+      .center-controls { display: grid; justify-items: center; gap: 2px; }
+      .overlay { position: absolute; inset: 48px 0 80px; z-index: 5; display: grid; place-content: center; justify-items: center; gap: 12px; background: #102725e8; text-align: center; padding: 12px; }
+      .overlay[hidden] { display: none; }
+      .overlay h1 { font-size: 25px; margin: 0; color: #9fffc6; }
+      .overlay p { font-size: 14px; margin: 0; }
+      .command { border: 0; border-radius: 6px; padding: 12px 22px; min-height: 44px; color: #102725; background: #9fffc6; font-weight: 800; }
+      #rotate { display: none; position: fixed; inset: 0; z-index: 10; background: #102725; align-content: center; justify-items: center; gap: 22px; padding: 20px; text-align: center; }
+      #rotate svg { width: 72px; height: 72px; color: #9fffc6; }
+      #rotate strong { font-size: 23px; }
+      body.portrait #rotate { display: grid; }
+      @media (max-width: 600px) {
+        .hud { gap: 6px; padding-right: 10px; }
+        .identity { font-size: 13px; }
+        .stat { font-size: 10px; }
+        .stat b { font-size: 13px; margin-inline-start: 2px; }
+        .group { gap: 5px; }
+        .controls { padding-inline: 8px; }
+        .control { width: 48px; }
+        .jump { width: 56px; }
+        .utility { width: 40px; height: 40px; }
+      }
+      @media (max-width: 460px) { .hud .stat:last-of-type { display: none; } }
+      @media (max-height: 350px) {
+        #stage, .overlay { top: 36px; bottom: 64px; }
+        .hud { height: 36px; }
+        .controls { height: 64px; padding-block: 4px; }
+        .control { height: 54px; }
+        .utility { height: 36px; width: 36px; }
+        #power { display: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="hud">
+      <strong class="identity">איתי שלומי <small>#7</small></strong>
+      <span class="stat">ניקוד <b id="score">0</b></span>
+      <span class="stat">חיים <b id="lives">3</b></span>
+      <span class="stat">מגרש <b id="level">1 / 3</b></span>
+      <div id="progress"></div>
+    </header>
+    <main id="stage"><div id="pyxel-screen"></div></main>
+    <nav class="controls" aria-label="בקרי משחק">
+      <div class="group">
+        <button class="control" data-action="left" aria-label="שמאלה" title="שמאלה"><i data-lucide="arrow-left"></i></button>
+        <button class="control" data-action="right" aria-label="ימינה" title="ימינה"><i data-lucide="arrow-right"></i></button>
+      </div>
+      <div class="center-controls">
+        <button class="control utility" id="pause" aria-label="השהיה" title="השהיה"><i data-lucide="pause"></i></button>
+        <span id="power"></span>
+      </div>
+      <div class="group">
+        <button class="control dash" data-action="dash" aria-label="זינוק מהיר" title="זינוק מהיר"><i data-lucide="zap"></i><span>זינוק</span></button>
+        <button class="control shoot" data-action="shoot" aria-label="זריקה" title="זריקה"><i data-lucide="flame"></i><span>זריקה</span></button>
+        <button class="control jump" data-action="jump" aria-label="קפיצה" title="קפיצה"><i data-lucide="arrow-up"></i><span>קפיצה</span></button>
+      </div>
+    </nav>
+    <section class="overlay" id="menu">
+      <h1 id="menu-title">איתי שלומי · בדרך לסל</h1>
+      <p id="menu-status" role="status">טוען את המגרש…</p>
+      <button class="command" id="play" hidden>למגרש</button>
+      <button class="command" id="restart" hidden>משחק חדש</button>
+    </section>
+    <section id="rotate"><i data-lucide="smartphone"></i><strong>איתי שלומי · בדרך לסל</strong><span>סובבו את הטלפון לרוחב</span></section>
+    <pyxel-run root="." name="basketball_run.py"></pyxel-run>
+    <script>
+      window.courtControls = { left: false, right: false, jump: false, shoot: false, dash: false, paused: false, restart: false };
+      const controls = window.courtControls;
+      const heldPointers = new Map();
+      const rotateQuery = window.parent.matchMedia('(pointer: coarse) and (orientation: portrait)');
+      let manualPause = false;
+      let state = null;
+      let previousState = '';
+      const menu = document.getElementById('menu');
+      const playButton = document.getElementById('play');
+      const restartButton = document.getElementById('restart');
+      const title = document.getElementById('menu-title');
+      const status = document.getElementById('menu-status');
+      function releaseControls() {
+        heldPointers.clear();
+        document.querySelectorAll('[data-action]').forEach(button => {
+          controls[button.dataset.action] = false;
+          button.dataset.held = 'false';
+        });
+      }
+      function syncPause() {
+        controls.paused = manualPause || rotateQuery.matches || document.hidden;
+        document.body.classList.toggle('portrait', rotateQuery.matches);
+        releaseControls();
+      }
+      rotateQuery.addEventListener('change', syncPause);
+      document.addEventListener('visibilitychange', syncPause);
+      window.addEventListener('blur', () => { manualPause = true; syncPause(); });
+      document.querySelectorAll('[data-action]').forEach(button => {
+        const action = button.dataset.action;
+        button.addEventListener('pointerdown', event => {
+          event.preventDefault();
+          heldPointers.set(event.pointerId, action);
+          button.setPointerCapture(event.pointerId);
+          controls[action] = true;
+          button.dataset.held = 'true';
+        });
+        const release = event => {
+          heldPointers.delete(event.pointerId);
+          controls[action] = [...heldPointers.values()].includes(action);
+          button.dataset.held = String(controls[action]);
+        };
+        button.addEventListener('pointerup', release);
+        button.addEventListener('pointercancel', release);
+        button.addEventListener('lostpointercapture', release);
+      });
+      document.getElementById('pause').addEventListener('click', () => { manualPause = true; syncPause(); });
+      playButton.addEventListener('click', () => {
+        window.pyxelContext?.resolveInput?.();
+        manualPause = false;
+        syncPause();
+      });
+      restartButton.addEventListener('click', () => {
+        controls.restart = true;
+        manualPause = false;
+        syncPause();
+      });
+      window.addEventListener('DOMContentLoaded', () => window.lucide?.createIcons());
+      syncPause();
+      function refresh() {
+        const runtime = window.pyxelContext;
+        if (window.courtState && window.courtState !== previousState) {
+          previousState = window.courtState;
+          state = JSON.parse(previousState);
+          document.getElementById('score').textContent = state.score;
+          document.getElementById('lives').textContent = state.lives;
+          document.getElementById('level').textContent = `${state.level} / 3`;
+          document.getElementById('progress').style.width = `${state.progress}%`;
+          document.getElementById('power').textContent = state.fire ? `אש ${Math.ceil(state.fire / 30)}` : state.growth ? `ענק ${Math.ceil(state.growth / 30)}` : '';
+          document.querySelector('[data-action="shoot"]').disabled = !state.fire;
+          document.querySelector('[data-action="dash"]').disabled = state.dash_cooldown > 0;
+        }
+        const finished = state && ['won', 'over'].includes(state.phase);
+        const error = document.querySelector('#pyxel-error-overlay');
+        if (error || runtime?.hasFatalError) {
+          menu.hidden = false;
+          title.textContent = 'המגרש לא נטען';
+          status.textContent = 'נדרש חיבור לאינטרנט. נסו לרענן.';
+          playButton.hidden = true;
+          restartButton.hidden = true;
+        } else if (!state) {
+          menu.hidden = false;
+          playButton.hidden = !runtime?.resolveInput;
+          status.textContent = runtime?.resolveInput ? '' : 'טוען את המגרש…';
+        } else {
+          menu.hidden = !(manualPause || finished);
+          title.textContent = finished ? (state.phase === 'won' ? 'איתי שלומי · אלוף המגרש!' : 'המשחק הסתיים') : 'פסק זמן';
+          status.textContent = finished ? `${state.score} נקודות` : 'איתי שלומי';
+          playButton.textContent = 'ממשיכים';
+          playButton.hidden = Boolean(finished);
+          restartButton.hidden = false;
+        }
+        requestAnimationFrame(refresh);
+      }
+      refresh();
+    </script>
+  </body>
+</html>
