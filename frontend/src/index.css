@@ -1123,6 +1123,22 @@ textarea {
   display: none;
 }
 
+.game-timer-card.game-timer-aod {
+  min-height: min(70vh, 620px);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  background: #080d0c;
+  color: #94a7a0;
+}
+
+.game-timer-aod .section-head h2,
+.game-timer-aod .section-kicker,
+.game-timer-aod .status-badge,
+.game-timer-aod .game-timer-announcement {
+  color: #73857f;
+}
+
 .game-timer-display {
   margin: 20px auto;
   padding: 18px 12px;
@@ -1131,11 +1147,35 @@ textarea {
   background: #e8f4ff;
   color: #111;
   font-family: 'Press Start 2P', monospace;
-  font-size: clamp(2.5rem, 12vw, 5rem);
+  font-size: 3.5rem;
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
   text-align: center;
   direction: ltr;
+}
+
+.game-timer-aod .game-timer-display {
+  border-color: #18221e;
+  background: #080d0c;
+  color: #71847d;
+  animation: game-timer-aod-drift 90s steps(1, end) infinite;
+}
+
+.game-timer-aod .game-timer-duration,
+.game-timer-aod .game-timer-actions .cta:not(.game-timer-aod-toggle) {
+  display: none;
+}
+
+.game-timer-aod .game-timer-aod-toggle {
+  min-height: 44px;
+  opacity: 0.68;
+}
+
+@keyframes game-timer-aod-drift {
+  0%, 24% { transform: translate(0, 0); }
+  25%, 49% { transform: translate(2px, 1px); }
+  50%, 74% { transform: translate(-1px, 2px); }
+  75%, 100% { transform: translate(1px, -1px); }
 }
 
 .game-timer-finished {
@@ -1181,6 +1221,12 @@ textarea {
   color: var(--ink-soft);
   font-weight: 700;
   text-align: center;
+}
+
+@media (max-width: 520px) {
+  .game-timer-display {
+    font-size: 2.6rem;
+  }
 }
 
 .info-card {

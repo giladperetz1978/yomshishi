@@ -4,6 +4,8 @@ type TimerStatus = 'idle' | 'running' | 'paused' | 'finished'
 type Announcement = { at: number; text: string; language?: string }
 type WakeLock = { release: () => Promise<void> }
 
+const NATIVE_TIMER_MODE = new URLSearchParams(window.location.search).get('nativeTimer') === '1'
+
 const ANNOUNCEMENTS: Announcement[] = [
   { at: 300, text: 'נשארו חמש דקות' },
   { at: 120, text: 'נשארו שתי דקות' },
@@ -23,6 +25,7 @@ const ANNOUNCEMENTS: Announcement[] = [
 ]
 
 function speak(text: string, language = 'he-IL') {
+  if (NATIVE_TIMER_MODE) return true
   if (!('speechSynthesis' in window)) return false
 
   const utterance = new SpeechSynthesisUtterance(text)
@@ -30,6 +33,12 @@ function speak(text: string, language = 'he-IL') {
   utterance.rate = 1.15
   window.speechSynthesis.speak(utterance)
   return true
+}
+
+function sendNativeTimerCommand(action: 'start' | 'resume' | 'pause' | 'stop', seconds = 0) {
+  if (!NATIVE_TIMER_MODE) return
+  const intentUrl = `intent://timer/${action}?seconds=${Math.max(0, Math.ceil(seconds))}#Intent;scheme=yomshishi;package=com.yomshishi.app;end`
+  window.location.assign(intentUrl)
 }
 
 function formatTime(totalSeconds: number) {
@@ -44,6 +53,7 @@ export default function GameTimer({ hidden }: { hidden: boolean }) {
   const [status, setStatus] = useState<TimerStatus>('idle')
   const [lastAnnouncement, setLastAnnouncement] = useState('')
   const [voiceAvailable, setVoiceAvailable] = useState(true)
+  const [alwaysOnDisplay, setAlwaysOnDisplay] = useState(false)
   const deadlineRef = useRef(0)
   const previousSecondRef = useRef(601)
   const remainingMillisecondsRef = useRef(600_000)
@@ -57,6 +67,7 @@ export default function GameTimer({ hidden }: { hidden: boolean }) {
 
   function resetTimer() {
     window.speechSynthesis?.cancel()
+    sendNativeTimerCommand('stop')
     const seconds = durationMinutes * 60
     remainingMillisecondsRef.current = seconds * 1000
     previousSecondRef.current = seconds + 1
@@ -66,14 +77,16 @@ export default function GameTimer({ hidden }: { hidden: boolean }) {
   }
 
   function startTimer() {
-    const seconds = status === 'paused' ? remainingMillisecondsRef.current / 1000 : durationMinutes * 60
-    if (status !== 'paused') {
+    const wasPaused = status === 'paused'
+    const seconds = wasPaused ? remainingMillisecondsRef.current / 1000 : durationMinutes * 60
+    if (!wasPaused) {
       remainingMillisecondsRef.current = seconds * 1000
       previousSecondRef.current = Math.ceil(seconds) + 1
       setRemainingSeconds(Math.ceil(seconds))
     }
     window.speechSynthesis?.cancel()
     deadlineRef.current = Date.now() + remainingMillisecondsRef.current
+    sendNativeTimerCommand(wasPaused ? 'resume' : 'start', seconds)
     setStatus('running')
   }
 
@@ -81,11 +94,12 @@ export default function GameTimer({ hidden }: { hidden: boolean }) {
     remainingMillisecondsRef.current = Math.max(0, deadlineRef.current - Date.now())
     setRemainingSeconds(Math.ceil(remainingMillisecondsRef.current / 1000))
     window.speechSynthesis?.cancel()
+    sendNativeTimerCommand('pause', remainingMillisecondsRef.current / 1000)
     setStatus('paused')
   }
 
   useEffect(() => {
-    if (status !== 'running') return
+    if (hidden || (status !== 'running' && !alwaysOnDisplay)) return
 
     const tick = () => {
       const millisecondsLeft = Math.max(0, deadlineRef.current - Date.now())
@@ -113,7 +127,7 @@ export default function GameTimer({ hidden }: { hidden: boolean }) {
 
     const requestWakeLock = async () => {
       const wakeLockApi = (navigator as Navigator & { wakeLock?: { request: (type: 'screen') => Promise<WakeLock> } }).wakeLock
-      if (!wakeLockApi || document.visibilityState !== 'visible') return
+      if (!wakeLockApi || document.visibilityState !== 'visible' || wakeLockRef.current) return
       try {
         wakeLockRef.current = await wakeLockApi.request('screen')
       } catch (_error) {
@@ -126,7 +140,7 @@ export default function GameTimer({ hidden }: { hidden: boolean }) {
       void wakeLock?.release().catch(() => undefined)
     }
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') void requestWakeLock()
+      if (document.visibilityState === 'visible' && (status === 'running' || alwaysOnDisplay)) void requestWakeLock()
       else releaseWakeLock()
     }
 
@@ -136,7 +150,7 @@ export default function GameTimer({ hidden }: { hidden: boolean }) {
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       releaseWakeLock()
     }
-  }, [status])
+  }, [alwaysOnDisplay, hidden, status])
 
   useEffect(() => () => window.speechSynthesis?.cancel(), [])
 
@@ -153,9 +167,10 @@ export default function GameTimer({ hidden }: { hidden: boolean }) {
 
   const isRunning = status === 'running'
   const isFinished = status === 'finished'
+  const toggleAlwaysOnDisplay = () => setAlwaysOnDisplay((enabled) => !enabled)
 
   return (
-    <article className="card full-width game-timer-card" hidden={hidden}>
+    <article className={`card full-width game-timer-card ${alwaysOnDisplay ? 'game-timer-aod' : ''}`} hidden={hidden}>
       <div className="section-head">
         <div>
           <p className="section-kicker">Game Clock</p>
@@ -193,11 +208,21 @@ export default function GameTimer({ hidden }: { hidden: boolean }) {
             </button>
           )}
           <button type="button" className="cta cta-ghost" onClick={resetTimer}>איפוס</button>
+          <button
+            type="button"
+            className={`cta ${alwaysOnDisplay ? 'cta-primary' : 'cta-secondary'} game-timer-aod-toggle`}
+            aria-pressed={alwaysOnDisplay}
+            onClick={toggleAlwaysOnDisplay}
+          >
+            {alwaysOnDisplay ? 'יציאה מ־ALWAYS ON DISPLAY' : 'ALWAYS ON DISPLAY'}
+          </button>
         </div>
       </div>
 
       <p className="game-timer-announcement" aria-live="off">
-        {lastAnnouncement || (voiceAvailable ? 'הכריזה הקולית מוכנה' : 'הכריזה הקולית אינה זמינה במכשיר הזה')}
+        {lastAnnouncement || (NATIVE_TIMER_MODE
+          ? 'הכריזה הקולית פועלת גם כשהמסך כבוי'
+          : voiceAvailable ? 'הכריזה הקולית מוכנה' : 'הכריזה הקולית אינה זמינה במכשיר הזה')}
       </p>
     </article>
   )
