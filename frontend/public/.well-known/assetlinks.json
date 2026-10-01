@@ -1,0 +1,14 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.yomshishi.app",
+      "sha256_cert_fingerprints": [
+        "FE:81:AF:8C:88:F9:53:9D:7A:DB:99:22:BA:60:D0:35:4A:F7:D4:C8:FA:70:AF:FC:7E:08:EF:09:EC:75:F9:D3"
+      ]
+    }
+  }
+]
