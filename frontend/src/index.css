@@ -1119,6 +1119,70 @@ textarea {
   color: #ffffff;
 }
 
+.game-timer-card[hidden] {
+  display: none;
+}
+
+.game-timer-display {
+  margin: 20px auto;
+  padding: 18px 12px;
+  width: min(100%, 520px);
+  border: 4px solid #000;
+  background: #e8f4ff;
+  color: #111;
+  font-family: 'Press Start 2P', monospace;
+  font-size: clamp(2.5rem, 12vw, 5rem);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  text-align: center;
+  direction: ltr;
+}
+
+.game-timer-finished {
+  background: var(--brand);
+  color: #fff;
+}
+
+.game-timer-controls {
+  display: flex;
+  justify-content: center;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.game-timer-duration {
+  display: grid;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.game-timer-duration input {
+  width: 140px;
+  min-height: 48px;
+  border: 4px solid #000;
+  border-radius: 0;
+  padding: 8px 12px;
+  background: #fff;
+  color: #111;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.game-timer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.game-timer-announcement {
+  min-height: 1.5em;
+  margin: 18px 0 0;
+  color: var(--ink-soft);
+  font-weight: 700;
+  text-align: center;
+}
+
 .info-card {
   background: #ffffff;
 }
