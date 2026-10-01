@@ -1484,6 +1484,9 @@ async function startServer() {
   });
 
   if (fs.existsSync(FRONTEND_DIST_DIR)) {
+    app.use('/.well-known', express.static(path.join(FRONTEND_DIST_DIR, '.well-known'), {
+      dotfiles: 'allow',
+    }));
     app.use(express.static(FRONTEND_DIST_DIR));
     app.get(/^(?!\/api).*/, (_req, res) => {
       res.sendFile(path.join(FRONTEND_DIST_DIR, 'index.html'));
