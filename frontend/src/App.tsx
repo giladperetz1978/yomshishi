@@ -439,6 +439,84 @@ function IntroSplash({ visible }: { visible: boolean }) {
   )
 }
 
+type CurrentWeather = {
+  temperature: number
+  windSpeed: number
+  weatherCode: number
+}
+
+function WeatherWidget() {
+  const [weather, setWeather] = useState<CurrentWeather | null>(null)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const refreshWeather = async () => {
+      try {
+        const response = await fetch(
+          'https://api.open-meteo.com/v1/forecast?latitude=32.105&longitude=34.806&current=temperature_2m,wind_speed_10m,weather_code&wind_speed_unit=kmh&timezone=Asia%2FJerusalem',
+          { signal: controller.signal },
+        )
+        if (!response.ok) throw new Error('Weather request failed')
+
+        const data = (await response.json()) as {
+          current?: { temperature_2m?: number; wind_speed_10m?: number; weather_code?: number }
+        }
+        const current = data.current
+        if (
+          !current
+          || typeof current.temperature_2m !== 'number'
+          || typeof current.wind_speed_10m !== 'number'
+          || typeof current.weather_code !== 'number'
+        ) {
+          throw new Error('Weather data is incomplete')
+        }
+
+        setWeather({
+          temperature: current.temperature_2m,
+          windSpeed: current.wind_speed_10m,
+          weatherCode: current.weather_code,
+        })
+      } catch (_error) {
+        if (!controller.signal.aborted) setWeather(null)
+      }
+    }
+
+    void refreshWeather()
+    const intervalId = window.setInterval(() => void refreshWeather(), 15 * 60 * 1000)
+    return () => {
+      controller.abort()
+      window.clearInterval(intervalId)
+    }
+  }, [])
+
+  if (!weather) return null
+
+  const rainyCodes = [51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 71, 73, 75, 77, 80, 81, 82, 85, 86, 95, 96, 99]
+  const cloudyCodes = [1, 2, 3, 45, 48]
+  const weatherIcon = rainyCodes.includes(weather.weatherCode)
+    ? '🌧️'
+    : cloudyCodes.includes(weather.weatherCode)
+      ? '☁️'
+      : '☀️'
+  const condition = rainyCodes.includes(weather.weatherCode)
+    ? 'גשום'
+    : cloudyCodes.includes(weather.weatherCode)
+      ? 'מעונן'
+      : 'בהיר'
+
+  return (
+    <div
+      className="weather-widget"
+      title="מזג אוויר נוכחי באזור הספורטק בתל אביב"
+      aria-label={`מזג אוויר בתל אביב: ${Math.round(weather.temperature)} מעלות צלזיוס, רוח ${Math.round(weather.windSpeed)} קילומטר לשעה, ${condition}`}
+    >
+      <span className="weather-widget-icon" aria-hidden="true">{weatherIcon}</span>
+      <span className="weather-widget-temperature">{Math.round(weather.temperature)}°C</span>
+      <span className="weather-widget-wind">{Math.round(weather.windSpeed)} קמ״ש</span>
+    </div>
+  )
+}
+
 function App() {
   const [user, setUser] = useState<User | null>(null)
   const [game, setGame] = useState<Game | null>(null)
@@ -1069,12 +1147,15 @@ function App() {
             ) : null}
           </div>
 
-          <div className="brand-block">
-            <h1 className="hero-title-neon" aria-label="ספורטק 3X3">
-              <span className="hero-title-line">ספורטק</span>
-              <span className="hero-title-line">3X3</span>
-            </h1>
-            <p className="hero-tagline">ליגת שישי</p>
+          <div className="hero-brand-group">
+            <div className="brand-block">
+              <h1 className="hero-title-neon" aria-label="ספורטק 3X3">
+                <span className="hero-title-line">ספורטק</span>
+                <span className="hero-title-line">3X3</span>
+              </h1>
+              <p className="hero-tagline">ליגת שישי</p>
+            </div>
+            <WeatherWidget />
           </div>
         </div>
 

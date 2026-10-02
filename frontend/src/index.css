@@ -318,6 +318,36 @@ textarea {
   max-width: 580px;
 }
 
+.hero-brand-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.weather-widget {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  direction: ltr;
+  color: #000;
+  font-size: 0.95rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.weather-widget-icon {
+  font-size: 1.45rem;
+  line-height: 1;
+}
+
+.weather-widget-wind {
+  padding-left: 8px;
+  border-left: 1px solid rgb(0 0 0 / 45%);
+}
+
 .hero-kicker,
 .section-kicker {
   margin: 0 0 10px;
@@ -1298,6 +1328,10 @@ textarea {
 
   .admin-corner {
     min-width: 0;
+  }
+
+  .hero-brand-group {
+    width: 100%;
   }
 
   .game-scoreboard {
