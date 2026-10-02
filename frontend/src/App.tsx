@@ -1539,7 +1539,10 @@ function App() {
                 <ul className="players players-grid">
                   {rosterGame.players.length ? (
                     rosterGame.players.map((player) => (
-                      <li key={player.registrationId}>
+                      <li
+                        key={player.registrationId}
+                        className={player.role === 'WAITING' ? 'roster-player-waiting' : undefined}
+                      >
                           <button
                             type="button"
                             className="roster-player-profile"

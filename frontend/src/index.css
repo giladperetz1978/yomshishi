@@ -661,6 +661,19 @@ textarea {
   cursor: pointer;
 }
 
+.roster-player-waiting {
+  flex-wrap: wrap;
+}
+
+.roster-player-waiting .roster-player-profile {
+  flex: 1 1 100%;
+}
+
+.roster-player-waiting .tag-arrival {
+  max-width: calc(100% - 52px);
+  margin-inline-start: 52px;
+}
+
 .roster-player-profile:hover .roster-player-name > span:last-child {
   text-decoration: underline;
 }
