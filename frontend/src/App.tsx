@@ -453,7 +453,7 @@ function WeatherWidget() {
     const refreshWeather = async () => {
       try {
         const response = await fetch(
-          'https://api.open-meteo.com/v1/forecast?latitude=32.105&longitude=34.806&current=temperature_2m,wind_speed_10m,weather_code&wind_speed_unit=kmh&timezone=Asia%2FJerusalem',
+          'https://api.open-meteo.com/v1/forecast?latitude=32.9900905&longitude=35.0844438&current=temperature_2m,wind_speed_10m,weather_code&wind_speed_unit=kmh&timezone=Asia%2FJerusalem',
           { signal: controller.signal },
         )
         if (!response.ok) throw new Error('Weather request failed')
@@ -507,8 +507,8 @@ function WeatherWidget() {
   return (
     <div
       className="weather-widget"
-      title="מזג אוויר נוכחי באזור הספורטק בתל אביב"
-      aria-label={`מזג אוויר בתל אביב: ${Math.round(weather.temperature)} מעלות צלזיוס, רוח ${Math.round(weather.windSpeed)} קילומטר לשעה, ${condition}`}
+      title="מזג אוויר נוכחי בספורטק עין שרה בנהריה"
+      aria-label={`מזג אוויר בנהריה: ${Math.round(weather.temperature)} מעלות צלזיוס, רוח ${Math.round(weather.windSpeed)} קילומטר לשעה, ${condition}`}
     >
       <span className="weather-widget-icon" aria-hidden="true">{weatherIcon}</span>
       <span className="weather-widget-temperature">{Math.round(weather.temperature)}°C</span>
