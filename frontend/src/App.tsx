@@ -382,10 +382,20 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) {
     const message = (payload as { message?: string })?.message || 'אירעה שגיאה בבקשה לשרת.'
-    throw new Error(message)
+    throw new ApiRequestError(message, response.status)
   }
 
   return payload as T
+}
+
+class ApiRequestError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiRequestError'
+    this.status = status
+  }
 }
 
 function IntroSplash({ visible }: { visible: boolean }) {
@@ -690,10 +700,17 @@ function App() {
 
   async function refreshWeeklyGameSchedule(token = adminToken) {
     if (!token) return
-    const response = await apiRequest<{ settings: WeeklyGameSchedule }>(
-      `/api/admin/weekly-game?adminToken=${encodeURIComponent(token)}`
-    )
-    setWeeklyGameSchedule(response.settings)
+    try {
+      const response = await apiRequest<{ settings: WeeklyGameSchedule }>(
+        `/api/admin/weekly-game?adminToken=${encodeURIComponent(token)}`
+      )
+      setWeeklyGameSchedule(response.settings)
+    } catch (requestError: unknown) {
+      if (requestError instanceof ApiRequestError && requestError.status === 401) {
+        handleExpiredAdminSession()
+      }
+      throw requestError
+    }
   }
 
   async function refreshGame(userId?: number) {
@@ -780,6 +797,15 @@ function App() {
     setAdminPlayers([])
     setSuccess('יצאת ממצב אדמין.')
     setError('')
+  }
+
+  function handleExpiredAdminSession() {
+    clearStoredAdminToken()
+    setAdminToken('')
+    setAdminPassword('')
+    setAdminPlayers([])
+    setSuccess('')
+    setError('חיבור האדמין פג. יש להתחבר מחדש.')
   }
 
   async function loginAdmin(event: FormEvent) {
@@ -965,6 +991,10 @@ function App() {
       setWeeklyGameSchedule(response.settings)
       setSuccess('ההגדרה השבועית נשמרה.')
     } catch (requestError: unknown) {
+      if (requestError instanceof ApiRequestError && requestError.status === 401) {
+        handleExpiredAdminSession()
+        return
+      }
       const errorMessage = requestError instanceof Error ? requestError.message : 'שמירת ההגדרה השבועית נכשלה.'
       setError(errorMessage)
     } finally {

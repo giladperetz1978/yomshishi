@@ -1175,9 +1175,8 @@ async function startServer() {
   });
 
   app.get('/api/admin/weekly-game', (req, res) => {
-    const requester = ensureAdmin(0, String(req.query.adminToken || ''));
-    if (requester.error) {
-      return res.status(requester.error.status).json({ message: requester.error.message });
+    if (!isValidAdminToken(String(req.query.adminToken || ''))) {
+      return res.status(401).json({ message: 'חיבור האדמין פג. יש להתחבר מחדש.' });
     }
 
     const settings = get('SELECT * FROM weekly_game_schedule WHERE id = 1');
@@ -1196,9 +1195,8 @@ async function startServer() {
   });
 
   app.put('/api/admin/weekly-game', (req, res) => {
-    const requester = ensureAdmin(0, String(req.body?.adminToken || ''));
-    if (requester.error) {
-      return res.status(requester.error.status).json({ message: requester.error.message });
+    if (!isValidAdminToken(String(req.body?.adminToken || ''))) {
+      return res.status(401).json({ message: 'חיבור האדמין פג. יש להתחבר מחדש.' });
     }
 
     const validated = validateWeeklyGameSettings(req.body);
