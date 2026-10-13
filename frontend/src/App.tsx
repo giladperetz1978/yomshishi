@@ -95,6 +95,17 @@ type UpcomingGamesResponse = {
   maxActiveGames: number
 }
 
+type WeeklyGameSchedule = {
+  enabled: boolean
+  openingTime: string
+  gameWeekday: number
+  gameTime: string
+  startWeek: string | null
+  title: string
+  location: string
+  notes: string
+}
+
 type GameFormState = {
   title: string
   location: string
@@ -156,6 +167,16 @@ type Snapshot = {
   game_date: string
   created_at: string
 }
+
+const WEEKDAY_OPTIONS = [
+  { value: 1, label: 'יום שני' },
+  { value: 2, label: 'יום שלישי' },
+  { value: 3, label: 'יום רביעי' },
+  { value: 4, label: 'יום חמישי' },
+  { value: 5, label: 'יום שישי' },
+  { value: 6, label: 'יום שבת' },
+  { value: 0, label: 'יום ראשון' },
+]
 
 const configuredApiBase = String(import.meta.env.VITE_API_BASE_URL || '').trim()
 const API_BASE = configuredApiBase ? configuredApiBase.replace(/\/$/, '') : ''
@@ -248,6 +269,19 @@ function createEmptyGameForm(): GameFormState {
     location: '',
     notes: '',
     gameDate: createDefaultGameDateInput(),
+  }
+}
+
+function createDefaultWeeklyGameSchedule(): WeeklyGameSchedule {
+  return {
+    enabled: false,
+    openingTime: '09:00',
+    gameWeekday: 5,
+    gameTime: '16:00',
+    startWeek: null,
+    title: 'משחק שישי',
+    location: '',
+    notes: '',
   }
 }
 
@@ -539,6 +573,7 @@ function App() {
   const [adminUsername, setAdminUsername] = useState('gilad')
   const [adminPassword, setAdminPassword] = useState('')
   const [adminToken, setAdminToken] = useState<string>(() => readStoredAdminToken())
+  const [weeklyGameSchedule, setWeeklyGameSchedule] = useState<WeeklyGameSchedule>(createDefaultWeeklyGameSchedule)
   const [authTab, setAuthTab] = useState<'player' | 'admin'>('player')
   const [activeTab, setActiveTab] = useState<AppTab>('main')
   const [lotteryOverview, setLotteryOverview] = useState<LotteryOverviewResponse | null>(null)
@@ -609,15 +644,30 @@ function App() {
   }, [registeredUserId])
 
   useEffect(() => {
-    if (!isEditingGame) {
-      return
+    const refreshGames = () => {
+      const queryParams = new URLSearchParams()
+      if (user?.id) queryParams.set('userId', String(user.id))
+      const query = queryParams.size ? `?${queryParams.toString()}` : ''
+      Promise.all([
+        apiRequest<{ game: Game | null }>(`/api/games/current${user?.id ? `?userId=${user.id}` : ''}`),
+        apiRequest<UpcomingGamesResponse>(`/api/games/upcoming${query}`),
+      ]).then(([gameResponse, upcomingResponse]) => {
+        setGame(gameResponse.game)
+        setUpcomingGames(upcomingResponse.games || [])
+        setMaxActiveGames(upcomingResponse.maxActiveGames || 2)
+      }).catch((requestError: unknown) => {
+        const errorMessage = requestError instanceof Error ? requestError.message : 'רענון המשחקים נכשל.'
+        setError(errorMessage)
+      })
     }
 
-    const targetGame = (editingGameId ? upcomingGames.find((item) => item.id === editingGameId) : null) || game
-    if (targetGame) {
-      setGameForm(gameToForm(targetGame))
+    const intervalId = window.setInterval(refreshGames, 60_000)
+    document.addEventListener('visibilitychange', refreshGames)
+    return () => {
+      window.clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', refreshGames)
     }
-  }, [game, isEditingGame, editingGameId, upcomingGames])
+  }, [user?.id, adminToken])
 
   useEffect(() => {
     if (activeTab === 'players') {
@@ -636,6 +686,14 @@ function App() {
       `/api/admin/players?adminToken=${encodeURIComponent(adminToken)}`
     )
     setAdminPlayers(response.players || [])
+  }
+
+  async function refreshWeeklyGameSchedule(token = adminToken) {
+    if (!token) return
+    const response = await apiRequest<{ settings: WeeklyGameSchedule }>(
+      `/api/admin/weekly-game?adminToken=${encodeURIComponent(token)}`
+    )
+    setWeeklyGameSchedule(response.settings)
   }
 
   async function refreshGame(userId?: number) {
@@ -744,6 +802,8 @@ function App() {
       setAdminPassword('')
       setSuccess('כניסת אדמין הצליחה.')
       await refreshAdminPlayers()
+      await refreshWeeklyGameSchedule(response.token)
+      await refreshUpcomingGames(user?.id)
     } catch (requestError: unknown) {
       const errorMessage = requestError instanceof Error ? requestError.message : 'כניסת אדמין נכשלה.'
       setError(errorMessage)
@@ -851,6 +911,7 @@ function App() {
     setIsBusy(true)
 
     try {
+      const editingExistingGame = Boolean(isEditingGame && editingGameId)
       const payload = {
         userId: user?.id || 0,
         adminToken,
@@ -860,27 +921,51 @@ function App() {
         gameDate: new Date(gameForm.gameDate).toISOString(),
       }
 
-      if (isEditingGame && editingGameId) {
-        const response = await apiRequest<{ game: Game }>(`/api/games/${editingGameId}`, {
+      if (editingExistingGame && editingGameId) {
+        await apiRequest<{ game: Game }>(`/api/games/${editingGameId}`, {
           method: 'PATCH',
           body: JSON.stringify(payload),
         })
-        setGame(response.game)
-        setIsEditingGame(false)
-        setEditingGameId(null)
         setSuccess('המשחק עודכן בהצלחה.')
       } else {
         const response = await apiRequest<{ game: Game; message?: string }>('/api/games', {
           method: 'POST',
           body: JSON.stringify(payload),
         })
-        setGame(response.game)
         setSuccess(response.message || 'המשחק נוצר בהצלחה.')
       }
 
+      setIsEditingGame(false)
+      setEditingGameId(null)
+      if (!editingExistingGame) {
+        setGameForm(createEmptyGameForm())
+      }
+      await refreshGame(user?.id)
       await refreshUpcomingGames(user?.id)
     } catch (requestError: unknown) {
       const errorMessage = requestError instanceof Error ? requestError.message : 'שמירת המשחק נכשלה.'
+      setError(errorMessage)
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
+  async function saveWeeklyGameSchedule(event: FormEvent) {
+    event.preventDefault()
+    if (!hasAdminSession) return
+
+    setError('')
+    setSuccess('')
+    setIsBusy(true)
+    try {
+      const response = await apiRequest<{ settings: WeeklyGameSchedule }>('/api/admin/weekly-game', {
+        method: 'PUT',
+        body: JSON.stringify({ ...weeklyGameSchedule, adminToken }),
+      })
+      setWeeklyGameSchedule(response.settings)
+      setSuccess('ההגדרה השבועית נשמרה.')
+    } catch (requestError: unknown) {
+      const errorMessage = requestError instanceof Error ? requestError.message : 'שמירת ההגדרה השבועית נכשלה.'
       setError(errorMessage)
     } finally {
       setIsBusy(false)
@@ -1111,8 +1196,12 @@ function App() {
       refreshAdminPlayers().catch(() => {
         // Ignore and keep UI responsive.
       })
+      refreshWeeklyGameSchedule().catch((requestError: unknown) => {
+        const errorMessage = requestError instanceof Error ? requestError.message : 'טעינת ההגדרה השבועית נכשלה.'
+        setError(errorMessage)
+      })
     }
-  }, [hasAdminSession])
+  }, [hasAdminSession, adminToken])
 
   const spotlightGame = game ?? upcomingGames[0] ?? null
   const nextGame = upcomingGames.find((item) => item.id !== spotlightGame?.id) ?? null
@@ -1515,12 +1604,105 @@ function App() {
               </article>
             )}
 
+            {hasAdminSession && (
+              <article className="card full-width">
+                <div className="section-head">
+                  <div>
+                    <p className="section-kicker">Weekly Game Schedule</p>
+                    <h2>פתיחת הרשמה שבועית אוטומטית</h2>
+                  </div>
+                </div>
+                <form className="input-grid" onSubmit={saveWeeklyGameSchedule}>
+                  <label className="row">
+                    <input
+                      type="checkbox"
+                      checked={weeklyGameSchedule.enabled}
+                      onChange={(event) =>
+                        setWeeklyGameSchedule((current) => ({ ...current, enabled: event.target.checked }))
+                      }
+                    />
+                    הפעל פתיחת הרשמה אוטומטית בכל יום שני
+                  </label>
+                  <label style={{ display: 'grid', gap: 8 }}>
+                    <span>שעת פתיחת ההרשמה ביום שני</span>
+                    <input
+                      required
+                      type="time"
+                      value={weeklyGameSchedule.openingTime}
+                      onChange={(event) =>
+                        setWeeklyGameSchedule((current) => ({ ...current, openingTime: event.target.value }))
+                      }
+                    />
+                  </label>
+                  <label style={{ display: 'grid', gap: 8 }}>
+                    <span>יום המשחק השבועי</span>
+                    <select
+                      className="select-input"
+                      value={weeklyGameSchedule.gameWeekday}
+                      onChange={(event) =>
+                        setWeeklyGameSchedule((current) => ({
+                          ...current,
+                          gameWeekday: Number(event.target.value),
+                        }))
+                      }
+                    >
+                      {WEEKDAY_OPTIONS.map((day) => (
+                        <option key={day.value} value={day.value}>{day.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label style={{ display: 'grid', gap: 8 }}>
+                    <span>שעת המשחק</span>
+                    <input
+                      required
+                      type="time"
+                      value={weeklyGameSchedule.gameTime}
+                      onChange={(event) =>
+                        setWeeklyGameSchedule((current) => ({ ...current, gameTime: event.target.value }))
+                      }
+                    />
+                  </label>
+                  <input
+                    required
+                    placeholder="כותרת המשחק"
+                    value={weeklyGameSchedule.title}
+                    onChange={(event) =>
+                      setWeeklyGameSchedule((current) => ({ ...current, title: event.target.value }))
+                    }
+                  />
+                  <input
+                    placeholder="מיקום"
+                    value={weeklyGameSchedule.location}
+                    onChange={(event) =>
+                      setWeeklyGameSchedule((current) => ({ ...current, location: event.target.value }))
+                    }
+                  />
+                  <textarea
+                    placeholder="הערות"
+                    value={weeklyGameSchedule.notes}
+                    onChange={(event) =>
+                      setWeeklyGameSchedule((current) => ({ ...current, notes: event.target.value }))
+                    }
+                    style={{ minHeight: 80 }}
+                  />
+                  <p className="card-note">
+                    ההרשמה נפתחת לפי שעון ישראל. אם מפעילים את התזמון אחרי שעת הפתיחה של יום שני, ההפעלה הראשונה תהיה ביום שני הבא.
+                  </p>
+                  <div className="row">
+                    <button disabled={isBusy} className="cta cta-primary" type="submit">
+                      שמירת תזמון שבועי
+                    </button>
+                  </div>
+                </form>
+              </article>
+            )}
+
             {showCreateBlock && (
               <article className="card full-width">
                 <div className="section-head">
                   <div>
                     <p className="section-kicker">Next Match Setup</p>
-                    <h2>{isEditingGame ? 'עריכת משחק' : 'פתיחת משחק חדש (אדמין בלבד)'}</h2>
+                    <h2>{editingGameId ? 'עריכת משחק' : 'פתיחת משחק חדש (אדמין בלבד)'}</h2>
                   </div>
                 </div>
 
@@ -1532,6 +1714,7 @@ function App() {
                         className="cta cta-primary"
                         disabled={isBusy}
                         onClick={() => {
+                          setGameForm(gameToForm(item))
                           setEditingGameId(item.id)
                           setIsEditingGame(true)
                         }}
@@ -1549,6 +1732,20 @@ function App() {
                         מחיקת {formatGameDate(item.gameDate)}
                       </button>
                     ))}
+                    {canShowCreateForm && (
+                      <button
+                        type="button"
+                        className="cta cta-soft"
+                        disabled={isBusy}
+                        onClick={() => {
+                          setEditingGameId(null)
+                          setGameForm(createEmptyGameForm())
+                          setIsEditingGame(true)
+                        }}
+                      >
+                        פתיחת משחק חדש
+                      </button>
+                    )}
                   </div>
                 ) : (
                   <form className="input-grid" onSubmit={submitGameForm}>
@@ -1577,7 +1774,7 @@ function App() {
                     />
                     <div className="row">
                       <button disabled={isBusy} className="cta cta-primary" type="submit">
-                        {isEditingGame ? 'שמירת שינויים' : 'יצירת משחק'}
+                        {editingGameId ? 'שמירת שינויים' : 'יצירת משחק'}
                       </button>
                       {isEditingGame && (
                         <button

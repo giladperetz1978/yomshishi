@@ -38,6 +38,7 @@ const MAX_ACTIVE_GAMES = 2;
 
 let db;
 const adminSessions = new Map();
+let weeklyCapacityWarningWeek = '';
 
 function all(sql, params = []) {
   const stmt = db.prepare(sql);
@@ -126,6 +127,90 @@ function lotteryAtIso(gameDate) {
 
 function isLotteryDue(gameDate) {
   return Date.now() >= new Date(lotteryAtIso(gameDate)).getTime();
+}
+
+function israelDateTimeToIso(year, month, day, hour, minute) {
+  const targetUtc = Date.UTC(year, month - 1, day, hour, minute);
+  let resolvedUtc = targetUtc;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const localParts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: GAME_TIME_ZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date(resolvedUtc));
+    const valueOf = (type) => Number(localParts.find((part) => part.type === type)?.value);
+    const displayedAsUtc = Date.UTC(
+      valueOf('year'),
+      valueOf('month') - 1,
+      valueOf('day'),
+      valueOf('hour'),
+      valueOf('minute'),
+      valueOf('second')
+    );
+    resolvedUtc += targetUtc - displayedAsUtc;
+  }
+
+  return new Date(resolvedUtc).toISOString();
+}
+
+function getIsraelDateParts(date) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: GAME_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const valueOf = (type) => Number(parts.find((part) => part.type === type)?.value);
+  return {
+    year: valueOf('year'),
+    month: valueOf('month'),
+    day: valueOf('day'),
+  };
+}
+
+function getWeeklyGameOccurrence(settings, now = new Date()) {
+  const { year, month, day } = getIsraelDateParts(now);
+  const localDate = new Date(Date.UTC(year, month - 1, day));
+  const daysSinceMonday = (localDate.getUTCDay() + 6) % 7;
+  const monday = new Date(localDate.getTime() - daysSinceMonday * 24 * 60 * 60 * 1000);
+  const mondayYear = monday.getUTCFullYear();
+  const mondayMonth = monday.getUTCMonth() + 1;
+  const mondayDay = monday.getUTCDate();
+  const weekKey = `${mondayYear}-${String(mondayMonth).padStart(2, '0')}-${String(mondayDay).padStart(2, '0')}`;
+  const [openingHour, openingMinute] = settings.opening_time.split(':').map(Number);
+  const opensAt = israelDateTimeToIso(mondayYear, mondayMonth, mondayDay, openingHour, openingMinute);
+  const gameDayOffset = (Number(settings.game_weekday) + 6) % 7;
+  const gameDate = new Date(monday.getTime() + gameDayOffset * 24 * 60 * 60 * 1000);
+  const [gameHour, gameMinute] = settings.game_time.split(':').map(Number);
+
+  return {
+    weekKey,
+    opensAt,
+    gameDate: israelDateTimeToIso(
+      gameDate.getUTCFullYear(),
+      gameDate.getUTCMonth() + 1,
+      gameDate.getUTCDate(),
+      gameHour,
+      gameMinute
+    ),
+  };
+}
+
+function getWeeklyScheduleStartWeek(settings, now = new Date()) {
+  const current = getWeeklyGameOccurrence(settings, now);
+  if (now.getTime() <= new Date(current.opensAt).getTime()) {
+    return current.weekKey;
+  }
+
+  const nextMonday = new Date(`${current.weekKey}T00:00:00Z`);
+  nextMonday.setUTCDate(nextMonday.getUTCDate() + 7);
+  return `${nextMonday.getUTCFullYear()}-${String(nextMonday.getUTCMonth() + 1).padStart(2, '0')}-${String(nextMonday.getUTCDate()).padStart(2, '0')}`;
 }
 
 function gameStatusByCount(totalPlayers, cancelled, benchCount = 0) {
@@ -330,9 +415,10 @@ function getUpcomingGameIds(limit = MAX_ACTIVE_GAMES) {
     `SELECT id
      FROM games
      WHERE is_cancelled = 0 AND game_date >= ?
+       AND (opens_at = '' OR opens_at <= ?)
      ORDER BY game_date ASC
      LIMIT ?`,
-    [nowIso(), limit]
+    [nowIso(), nowIso(), limit]
   );
 
   return rows.map((row) => Number(row.id));
@@ -371,7 +457,8 @@ function getGameRow(gameId) {
             created_by_user_id,
             created_at,
             updated_at,
-            lottery_signature
+            lottery_signature,
+            opens_at
      FROM games
      WHERE id = ?`,
     [gameId]
@@ -567,6 +654,67 @@ function processScheduledGames() {
   });
 
   cleanupOldSnapshots();
+}
+
+function processWeeklyGameSchedule() {
+  const settings = get('SELECT * FROM weekly_game_schedule WHERE id = 1');
+  if (!settings || Number(settings.enabled) !== 1) {
+    return;
+  }
+
+  const occurrence = getWeeklyGameOccurrence(settings);
+  const now = Date.now();
+  if (settings.start_week && occurrence.weekKey < settings.start_week) {
+    return;
+  }
+  if (now < new Date(occurrence.opensAt).getTime() || now >= new Date(occurrence.gameDate).getTime()) {
+    return;
+  }
+
+  if (get('SELECT week_key FROM weekly_game_occurrences WHERE week_key = ?', [occurrence.weekKey])) {
+    return;
+  }
+
+  const priorGame = get('SELECT id FROM games WHERE recurring_week = ?', [occurrence.weekKey]);
+  if (priorGame) {
+    run(
+      'INSERT OR IGNORE INTO weekly_game_occurrences (week_key, game_id, created_at) VALUES (?, ?, ?)',
+      [occurrence.weekKey, priorGame.id, nowIso()]
+    );
+    persistDb();
+    return;
+  }
+
+  if (getUpcomingGamesCount() >= MAX_ACTIVE_GAMES) {
+    if (weeklyCapacityWarningWeek !== occurrence.weekKey) {
+      console.warn(`Weekly game for ${occurrence.weekKey} was not opened because the active-game limit was reached.`);
+      weeklyCapacityWarningWeek = occurrence.weekKey;
+    }
+    return;
+  }
+
+  const createdAt = nowIso();
+  run(
+    `INSERT INTO games (title, location, notes, game_date, status, is_cancelled, created_by_user_id, lottery_signature, opens_at, recurring_week, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'OPEN', 0, NULL, '', ?, ?, ?, ?)`,
+    [
+      settings.title,
+      settings.location,
+      settings.notes,
+      occurrence.gameDate,
+      occurrence.opensAt,
+      occurrence.weekKey,
+      createdAt,
+      createdAt,
+    ]
+  );
+
+  const row = get('SELECT last_insert_rowid() AS id');
+  run(
+    'INSERT INTO weekly_game_occurrences (week_key, game_id, created_at) VALUES (?, ?, ?)',
+    [occurrence.weekKey, Number(row.id), createdAt]
+  );
+  recalculateGame(Number(row.id));
 }
 
 function cleanupInactivePlayers() {
@@ -772,6 +920,40 @@ function validateGameInput(payload) {
   };
 }
 
+function validateWeeklyGameSettings(payload) {
+  const openingTime = String(payload?.openingTime || '');
+  const gameTime = String(payload?.gameTime || '');
+  const gameWeekday = Number(payload?.gameWeekday);
+  const title = String(payload?.title || '').trim() || 'משחק שישי';
+  const location = String(payload?.location || '').trim();
+  const notes = String(payload?.notes || '').trim();
+
+  if (typeof payload?.enabled !== 'boolean') {
+    return { error: 'יש לבחור אם להפעיל פתיחה שבועית אוטומטית.' };
+  }
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(openingTime) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(gameTime)) {
+    return { error: 'יש להזין שעות תקינות לפתיחת ההרשמה ולמשחק.' };
+  }
+  if (!Number.isInteger(gameWeekday) || gameWeekday < 0 || gameWeekday > 6) {
+    return { error: 'יש לבחור יום תקין למשחק.' };
+  }
+  if (gameWeekday === 1 && gameTime <= openingTime) {
+    return { error: 'אם המשחק ביום שני, שעת המשחק צריכה להיות אחרי פתיחת ההרשמה.' };
+  }
+
+  return {
+    value: {
+      enabled: payload.enabled,
+      openingTime,
+      gameWeekday,
+      gameTime,
+      title,
+      location,
+      notes,
+    },
+  };
+}
+
 async function bootstrapDatabase() {
   if (!fs.existsSync(DB_DIR)) {
     fs.mkdirSync(DB_DIR, { recursive: true });
@@ -819,8 +1001,29 @@ async function bootstrapDatabase() {
       is_cancelled INTEGER NOT NULL DEFAULT 0,
       created_by_user_id INTEGER,
       lottery_signature TEXT NOT NULL DEFAULT '',
+      opens_at TEXT NOT NULL DEFAULT '',
+      recurring_week TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS weekly_game_schedule (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      enabled INTEGER NOT NULL DEFAULT 0,
+      opening_time TEXT NOT NULL DEFAULT '09:00',
+      game_weekday INTEGER NOT NULL DEFAULT 5,
+      game_time TEXT NOT NULL DEFAULT '16:00',
+      start_week TEXT,
+      title TEXT NOT NULL DEFAULT 'משחק שישי',
+      location TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS weekly_game_occurrences (
+      week_key TEXT PRIMARY KEY,
+      game_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS registrations (
@@ -878,6 +1081,8 @@ async function bootstrapDatabase() {
   ensureColumn('users', 'first_name', "TEXT NOT NULL DEFAULT ''");
   ensureColumn('users', 'last_name', "TEXT NOT NULL DEFAULT ''");
   ensureColumn('users', 'password_hash', 'TEXT');
+  ensureColumn('games', 'opens_at', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn('games', 'recurring_week', 'TEXT');
   ensureColumn('users', 'profile_completed', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn('users', 'profile_email', "TEXT NOT NULL DEFAULT ''");
   ensureColumn('users', 'phone', "TEXT NOT NULL DEFAULT ''");
@@ -886,12 +1091,20 @@ async function bootstrapDatabase() {
   ensureColumn('users', 'is_active', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn('users', 'is_injured', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('users', 'injury_until', 'TEXT');
+  ensureColumn('weekly_game_schedule', 'start_week', 'TEXT');
 
   ensureColumn('games', 'title', "TEXT NOT NULL DEFAULT 'משחק שישי'");
   ensureColumn('games', 'location', "TEXT NOT NULL DEFAULT ''");
   ensureColumn('games', 'notes', "TEXT NOT NULL DEFAULT ''");
   ensureColumn('games', 'created_by_user_id', 'INTEGER');
   ensureColumn('games', 'lottery_signature', "TEXT NOT NULL DEFAULT ''");
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS games_recurring_week_unique ON games(recurring_week)');
+  run(
+    `INSERT OR IGNORE INTO weekly_game_schedule
+     (id, enabled, opening_time, game_weekday, game_time, title, location, notes, updated_at)
+     VALUES (1, 0, '09:00', 5, '16:00', 'משחק שישי', '', '', ?)`,
+    [nowIso()]
+  );
 
   cleanupInactivePlayers();
 
@@ -918,7 +1131,7 @@ async function startServer() {
 
         callback(new Error('Origin not allowed by CORS'));
       },
-      methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type'],
     })
   );
@@ -959,6 +1172,70 @@ async function startServer() {
       token: session.token,
       expiresAt: new Date(session.expiresAt).toISOString(),
     });
+  });
+
+  app.get('/api/admin/weekly-game', (req, res) => {
+    const requester = ensureAdmin(0, String(req.query.adminToken || ''));
+    if (requester.error) {
+      return res.status(requester.error.status).json({ message: requester.error.message });
+    }
+
+    const settings = get('SELECT * FROM weekly_game_schedule WHERE id = 1');
+    return res.json({
+      settings: {
+        enabled: Number(settings.enabled) === 1,
+        openingTime: settings.opening_time,
+        gameWeekday: Number(settings.game_weekday),
+        gameTime: settings.game_time,
+        startWeek: settings.start_week,
+        title: settings.title,
+        location: settings.location,
+        notes: settings.notes,
+      },
+    });
+  });
+
+  app.put('/api/admin/weekly-game', (req, res) => {
+    const requester = ensureAdmin(0, String(req.body?.adminToken || ''));
+    if (requester.error) {
+      return res.status(requester.error.status).json({ message: requester.error.message });
+    }
+
+    const validated = validateWeeklyGameSettings(req.body);
+    if (validated.error) {
+      return res.status(400).json({ message: validated.error });
+    }
+
+    const settings = validated.value;
+    const existingSettings = get('SELECT enabled, start_week FROM weekly_game_schedule WHERE id = 1');
+    const startWeek = settings.enabled
+      ? Number(existingSettings.enabled) === 1 && existingSettings.start_week
+        ? existingSettings.start_week
+        : getWeeklyScheduleStartWeek({
+            opening_time: settings.openingTime,
+            game_weekday: settings.gameWeekday,
+            game_time: settings.gameTime,
+          })
+      : null;
+    run(
+      `UPDATE weekly_game_schedule
+       SET enabled = ?, opening_time = ?, game_weekday = ?, game_time = ?, start_week = ?, title = ?, location = ?, notes = ?, updated_at = ?
+       WHERE id = 1`,
+      [
+        settings.enabled ? 1 : 0,
+        settings.openingTime,
+        settings.gameWeekday,
+        settings.gameTime,
+        startWeek,
+        settings.title,
+        settings.location,
+        settings.notes,
+        nowIso(),
+      ]
+    );
+    persistDb();
+
+    return res.json({ settings: { ...settings, startWeek } });
   });
 
   app.get('/api/players/active', (_req, res) => {
@@ -1292,9 +1569,17 @@ async function startServer() {
 
     const createdAt = nowIso();
     run(
-      `INSERT INTO games (title, location, notes, game_date, status, is_cancelled, created_by_user_id, lottery_signature, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'OPEN', 0, NULL, '', ?, ?)`,
-      [validated.value.title, validated.value.location, validated.value.notes, validated.value.gameDate, createdAt, createdAt]
+      `INSERT INTO games (title, location, notes, game_date, status, is_cancelled, created_by_user_id, lottery_signature, opens_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'OPEN', 0, NULL, '', ?, ?, ?)`,
+      [
+        validated.value.title,
+        validated.value.location,
+        validated.value.notes,
+        validated.value.gameDate,
+        createdAt,
+        createdAt,
+        createdAt,
+      ]
     );
 
     const row = get('SELECT last_insert_rowid() AS id');
@@ -1328,7 +1613,14 @@ async function startServer() {
       `UPDATE games
        SET title = ?, location = ?, notes = ?, game_date = ?, lottery_signature = '', updated_at = ?
        WHERE id = ?`,
-      [validated.value.title, validated.value.location, validated.value.notes, validated.value.gameDate, nowIso(), gameId]
+      [
+        validated.value.title,
+        validated.value.location,
+        validated.value.notes,
+        validated.value.gameDate,
+        nowIso(),
+        gameId,
+      ]
     );
 
     run('DELETE FROM game_lottery WHERE game_id = ?', [gameId]);
@@ -1506,9 +1798,11 @@ async function startServer() {
   });
 
   processScheduledGames();
+  processWeeklyGameSchedule();
   cleanupInactivePlayers();
   setInterval(() => {
     processScheduledGames();
+    processWeeklyGameSchedule();
     cleanupInactivePlayers();
   }, 60000);
 
