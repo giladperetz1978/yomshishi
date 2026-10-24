@@ -1,5 +1,14 @@
-const CACHE_NAME = 'yomshishi-pwa-v2';
-const OFFLINE_URLS = ['/', '/index.html', '/manifest.webmanifest'];
+const CACHE_NAME = 'yomshishi-pwa-v4';
+const TIMER_AUDIO_FILES = [
+  'game-start', 'five-minutes', 'two-minutes', 'last-minute', 'game-over',
+  ...Array.from({ length: 10 }, (_, index) => `countdown-${index + 1}`),
+  'random-itai-three', 'random-elay-save', 'random-noam-three',
+  'random-moshon-score', 'random-salvador', 'random-fali', 'random-neta'
+];
+const OFFLINE_URLS = [
+  './', './index.html', './manifest.webmanifest',
+  ...TIMER_AUDIO_FILES.map((file) => `./audio/timer/${file}.mp3`)
+];
 
 function shouldBypassCache(url) {
   return url.pathname.startsWith('/api/') || url.hostname.includes('accounts.google.com');
@@ -61,6 +70,13 @@ self.addEventListener('fetch', (event) => {
   const requestUrl = new URL(event.request.url);
   if (shouldBypassCache(requestUrl)) {
     event.respondWith(fetch(event.request));
+    return;
+  }
+
+  if (requestUrl.origin === self.location.origin && requestUrl.pathname.includes('/audio/timer/')) {
+    event.respondWith(
+      caches.match(event.request).then((cached) => cached || fetch(event.request))
+    );
     return;
   }
 

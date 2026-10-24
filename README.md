@@ -60,6 +60,16 @@ Closed-group app for managing Friday 3v3 basketball games with manual game creat
 - The backend checks upcoming games every minute.
 - At 21:00 Israel time on the day before a game, it recalculates player roles and saves the roster snapshot.
 
+## Game Timer Audio
+
+- The web timer and local Android foreground/AOD timer use recordings from [elay96/basketball-sfx](https://github.com/elay96/basketball-sfx/tree/aa90345ab68c649bbc7fde29a40de41338f9d183), revision `aa90345ab68c649bbc7fde29a40de41338f9d183`. The project owner confirmed permission to use and distribute these recordings; upstream has no published license. Only the six timer recordings are used, not the unrelated SFX collection.
+- Announcements play on a fresh start, at 5 minutes, 2 minutes, 1 minute, each of the final 10 seconds, and zero. Resume does not repeat the start announcement. There is no 30-second recording, so the former synthesized 30-second announcement is removed.
+- In addition, seven random Hebrew commentary clips (`random-itai-three.mp3` with a crowd disappointment groan at the end, `random-elay-save.mp3`, `random-noam-three.mp3`, `random-moshon-score.mp3`, `random-salvador.mp3`, `random-fali.mp3`, and `random-neta.mp3`) are scheduled at random non-overlapping seconds during a running game, avoiding the 5-minute, 2-minute, 1-minute, and final countdown windows.
+- The source countdown lasts about 8.25 seconds, not 10. It is split at silent gaps into ten individual number clips, without changing speech speed, so each number starts at its matching second. Extraction ranges (seconds, from ten to one): `0-0.720975`, `0.940771-1.581450`, `1.681180-2.355420`, `2.521160-3.172470`, `3.321130-4.004780`, `4.085690-4.854990`, `4.984380-5.567780`, `5.681160-6.434010`, `6.557010-7.309500`, `7.504780-8.250000`. Clips were encoded with FFmpeg `libmp3lame` at 128 kbps.
+- Web assets are bundled under `frontend/public/audio/timer/`, resolved relative to Vite's base path, and precached by the service worker for offline use after installation. Playback unlocks on Start/Resume. Browser background throttling is platform-dependent; Android's native service uses the identical clips in `android/app/src/main/res/raw/` and continues with the screen off, without requiring Hebrew TTS.
+- Pause/reset stops the current clip. A delayed tick plays only the latest crossed milestone rather than queuing obsolete announcements. A new game begins with the start recording even when its initial duration equals a milestone.
+- Validate with `node --test frontend/tests/timer-audio.test.mjs`, `npm --prefix frontend run build`, and `android\gradlew.bat -p android :app:assembleDebug`. Installing an updated Android APK is required for native audio changes; a web deployment alone does not update the packaged recordings.
+
 ## GitHub Pages
 
 - Workflow: `.github/workflows/deploy-pages.yml`

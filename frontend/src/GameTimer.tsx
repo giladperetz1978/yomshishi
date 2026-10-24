@@ -1,39 +1,16 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  createRandomCommentarySchedule,
+  GAME_START,
+  getTimerAnnouncement,
+  TimerAudioPlayer,
+  type TimerAnnouncement,
+} from './timerAudio'
 
 type TimerStatus = 'idle' | 'running' | 'paused' | 'finished'
-type Announcement = { at: number; text: string; language?: string }
 type WakeLock = { release: () => Promise<void> }
 
 const NATIVE_TIMER_MODE = new URLSearchParams(window.location.search).get('nativeTimer') === '1'
-
-const ANNOUNCEMENTS: Announcement[] = [
-  { at: 300, text: 'נשארו חמש דקות' },
-  { at: 120, text: 'נשארו שתי דקות' },
-  { at: 60, text: 'נשארה דקה אחת' },
-  { at: 30, text: 'נשארו שלושים שניות' },
-  { at: 10, text: 'עשר' },
-  { at: 9, text: 'תשע' },
-  { at: 8, text: 'שמונה' },
-  { at: 7, text: 'שבע' },
-  { at: 6, text: 'שש' },
-  { at: 5, text: 'חמש' },
-  { at: 4, text: 'ארבע' },
-  { at: 3, text: 'שלוש' },
-  { at: 2, text: 'שתיים' },
-  { at: 1, text: 'אחת' },
-  { at: 0, text: 'Game Over', language: 'en-US' },
-]
-
-function speak(text: string, language = 'he-IL') {
-  if (NATIVE_TIMER_MODE) return true
-  if (!('speechSynthesis' in window)) return false
-
-  const utterance = new SpeechSynthesisUtterance(text)
-  utterance.lang = language
-  utterance.rate = 1.15
-  window.speechSynthesis.speak(utterance)
-  return true
-}
 
 function sendNativeTimerCommand(action: 'start' | 'resume' | 'pause' | 'stop', seconds = 0) {
   if (!NATIVE_TIMER_MODE) return
@@ -58,19 +35,27 @@ export default function GameTimer({ hidden }: { hidden: boolean }) {
   const previousSecondRef = useRef(601)
   const remainingMillisecondsRef = useRef(600_000)
   const wakeLockRef = useRef<WakeLock | null>(null)
+  const audioRef = useRef<TimerAudioPlayer | null>(null)
+  const randomScheduleRef = useRef<TimerAnnouncement[]>([])
 
-  function announce(text: string, language?: string) {
-    const available = speak(text, language)
-    setVoiceAvailable(available)
+  const reportAudioError = useCallback((error: unknown) => {
+    console.error('Timer audio playback failed', error)
+    setVoiceAvailable(false)
+  }, [])
+
+  const announce = useCallback((text: string, file: string, expiresAt: number) => {
     setLastAnnouncement(text)
-  }
+    if (NATIVE_TIMER_MODE) return
+    void audioRef.current?.play(file, expiresAt).catch(reportAudioError)
+  }, [reportAudioError])
 
   function resetTimer() {
-    window.speechSynthesis?.cancel()
+    audioRef.current?.stop()
     sendNativeTimerCommand('stop')
     const seconds = durationMinutes * 60
     remainingMillisecondsRef.current = seconds * 1000
     previousSecondRef.current = seconds + 1
+    randomScheduleRef.current = []
     setRemainingSeconds(seconds)
     setLastAnnouncement('')
     setStatus('idle')
@@ -81,25 +66,35 @@ export default function GameTimer({ hidden }: { hidden: boolean }) {
     const seconds = wasPaused ? remainingMillisecondsRef.current / 1000 : durationMinutes * 60
     if (!wasPaused) {
       remainingMillisecondsRef.current = seconds * 1000
-      previousSecondRef.current = Math.ceil(seconds) + 1
+      previousSecondRef.current = Math.ceil(seconds)
+      randomScheduleRef.current = createRandomCommentarySchedule(Math.ceil(seconds))
       setRemainingSeconds(Math.ceil(seconds))
     }
-    window.speechSynthesis?.cancel()
+    audioRef.current?.stop()
+    if (!NATIVE_TIMER_MODE) {
+      try {
+        audioRef.current ??= new TimerAudioPlayer()
+        void audioRef.current.prepare().then(() => setVoiceAvailable(true)).catch(reportAudioError)
+      } catch (error) {
+        reportAudioError(error)
+      }
+    }
     deadlineRef.current = Date.now() + remainingMillisecondsRef.current
     sendNativeTimerCommand(wasPaused ? 'resume' : 'start', seconds)
     setStatus('running')
+    if (!wasPaused) announce(GAME_START.text, GAME_START.file, Date.now() + 3000)
   }
 
   function pauseTimer() {
     remainingMillisecondsRef.current = Math.max(0, deadlineRef.current - Date.now())
     setRemainingSeconds(Math.ceil(remainingMillisecondsRef.current / 1000))
-    window.speechSynthesis?.cancel()
+    audioRef.current?.stop()
     sendNativeTimerCommand('pause', remainingMillisecondsRef.current / 1000)
     setStatus('paused')
   }
 
   useEffect(() => {
-    if (hidden || (status !== 'running' && !alwaysOnDisplay)) return
+    if (status !== 'running') return
 
     const tick = () => {
       const millisecondsLeft = Math.max(0, deadlineRef.current - Date.now())
@@ -108,19 +103,20 @@ export default function GameTimer({ hidden }: { hidden: boolean }) {
       remainingMillisecondsRef.current = millisecondsLeft
 
       const previousSecond = previousSecondRef.current
-      ANNOUNCEMENTS.filter(({ at }) => at < previousSecond && at >= secondsLeft)
-        .sort((left, right) => right.at - left.at)
-        .forEach(({ at, text, language }) => {
-          if (at === 0) setStatus('finished')
-          announce(text, language)
-        })
+      const announcement = getTimerAnnouncement(previousSecond, secondsLeft, randomScheduleRef.current)
+      if (secondsLeft === 0) setStatus('finished')
+      if (announcement) {
+        const { at, text, file } = announcement
+        const expiresAt = at === 0 ? Date.now() + 3000 : deadlineRef.current - (at - 1) * 1000
+        announce(text, file, expiresAt)
+      }
       previousSecondRef.current = secondsLeft
     }
 
     const intervalId = window.setInterval(tick, 100)
     tick()
     return () => window.clearInterval(intervalId)
-  }, [status])
+  }, [announce, status])
 
   useEffect(() => {
     if (status !== 'running') return
@@ -130,7 +126,7 @@ export default function GameTimer({ hidden }: { hidden: boolean }) {
       if (!wakeLockApi || document.visibilityState !== 'visible' || wakeLockRef.current) return
       try {
         wakeLockRef.current = await wakeLockApi.request('screen')
-      } catch (_error) {
+      } catch {
         wakeLockRef.current = null
       }
     }
@@ -152,7 +148,10 @@ export default function GameTimer({ hidden }: { hidden: boolean }) {
     }
   }, [alwaysOnDisplay, hidden, status])
 
-  useEffect(() => () => window.speechSynthesis?.cancel(), [])
+  useEffect(() => () => {
+    void audioRef.current?.dispose()?.catch(reportAudioError)
+    audioRef.current = null
+  }, [reportAudioError])
 
   function changeDuration(value: string) {
     const parsed = Number(value)
@@ -167,7 +166,13 @@ export default function GameTimer({ hidden }: { hidden: boolean }) {
 
   const isRunning = status === 'running'
   const isFinished = status === 'finished'
-  const toggleAlwaysOnDisplay = () => setAlwaysOnDisplay((enabled) => !enabled)
+  const toggleAlwaysOnDisplay = () => {
+    if (NATIVE_TIMER_MODE) {
+      window.location.assign('intent://timer/aod#Intent;scheme=yomshishi;package=com.yomshishi.app;end')
+      return
+    }
+    setAlwaysOnDisplay((enabled) => !enabled)
+  }
 
   return (
     <article className={`card full-width game-timer-card ${alwaysOnDisplay ? 'game-timer-aod' : ''}`} hidden={hidden}>
@@ -220,9 +225,9 @@ export default function GameTimer({ hidden }: { hidden: boolean }) {
       </div>
 
       <p className="game-timer-announcement" aria-live="off">
-        {lastAnnouncement || (NATIVE_TIMER_MODE
+        {!voiceAvailable ? 'לא ניתן להשמיע את קטעי הקול. בדקו את החיבור והרשאות השמע ונסו שוב.' : lastAnnouncement || (NATIVE_TIMER_MODE
           ? 'הכריזה הקולית פועלת גם כשהמסך כבוי'
-          : voiceAvailable ? 'הכריזה הקולית מוכנה' : 'הכריזה הקולית אינה זמינה במכשיר הזה')}
+          : 'הכריזה הקולית מוכנה')}
       </p>
     </article>
   )
