@@ -1,4 +1,4 @@
-const CACHE_NAME = 'yomshishi-pwa-v4';
+const CACHE_NAME = 'yomshishi-pwa-v5';
 const TIMER_AUDIO_FILES = [
   'game-start', 'five-minutes', 'two-minutes', 'last-minute', 'game-over',
   ...Array.from({ length: 10 }, (_, index) => `countdown-${index + 1}`),
